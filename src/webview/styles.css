@@ -1,0 +1,59 @@
+@import 'tailwindcss' source(none);
+
+/* Scan only Webview sources; Host code and generated bundles are not UI inputs. */
+@source './';
+
+/* Inline tokens resolve in the element's scope as VS Code updates its theme. */
+@theme inline {
+  --spacing: 4px;
+  --font-sans: var(--vscode-font-family);
+  --font-mono: var(--vscode-editor-font-family);
+  --font-weight-vscode: var(--vscode-font-weight);
+  --text-vscode: var(--vscode-font-size);
+  --text-base: 1rem;
+  --text-base--line-height: normal;
+  --color-foreground: var(--vscode-foreground);
+  --color-muted: var(--vscode-descriptionForeground);
+  --color-sidebar: var(--vscode-sideBar-background);
+  --color-section: var(
+    --vscode-sideBarSectionHeader-border,
+    var(--vscode-widget-border, transparent)
+  );
+  --color-widget: var(--vscode-widget-border, transparent);
+  --color-input: var(--vscode-input-background);
+  --color-input-foreground: var(--vscode-input-foreground);
+  --color-input-border: var(--vscode-input-border, transparent);
+  --color-input-placeholder: var(--vscode-input-placeholderForeground);
+  --color-button: var(--vscode-button-background);
+  --color-button-foreground: var(--vscode-button-foreground);
+  --color-button-border: var(--vscode-button-border, transparent);
+  --color-button-hover: var(--vscode-button-hoverBackground);
+  --color-secondary: var(--vscode-button-secondaryBackground);
+  --color-secondary-foreground: var(--vscode-button-secondaryForeground);
+  --color-secondary-hover: var(--vscode-button-secondaryHoverBackground);
+  --color-focus: var(--vscode-focusBorder);
+  --color-error: var(--vscode-errorForeground);
+  --color-contrast: var(--vscode-contrastBorder);
+}
+
+@custom-variant high-contrast (&:where(.vscode-high-contrast *, .vscode-high-contrast-light *));
+
+@layer base {
+  :root {
+    @apply bg-sidebar font-sans text-vscode leading-[normal] font-vscode text-foreground scheme-light-dark;
+  }
+
+  body {
+    @apply m-0 p-3;
+  }
+
+  body.vscode-dark,
+  body.vscode-high-contrast {
+    @apply scheme-dark;
+  }
+
+  body.vscode-light,
+  body.vscode-high-contrast-light {
+    @apply scheme-light;
+  }
+}

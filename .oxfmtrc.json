@@ -1,0 +1,12 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "semi": true,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "endOfLine": "lf",
+  "sortTailwindcss": { "stylesheet": "./src/webview/styles.css" },
+  "ignorePatterns": ["node_modules/**", "dist/**", "artifacts/**", "bun.lock"]
+}

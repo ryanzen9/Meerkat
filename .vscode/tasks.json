@@ -1,0 +1,53 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "dev",
+      "type": "shell",
+      "command": "bun run dev",
+      "isBackground": true,
+      "problemMatcher": [
+        {
+          "owner": "review-bot-build",
+          "pattern": {
+            "regexp": "^(.+)\\((\\d+),(\\d+)\\): error (.*)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "message": 4
+          },
+          "background": {
+            "activeOnStart": true,
+            "beginsPattern": "^\\[watch\\] starting",
+            "endsPattern": "^\\[watch\\] ready"
+          }
+        }
+      ],
+      "presentation": { "reveal": "silent", "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "bun run build",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "typecheck",
+      "type": "shell",
+      "command": "bun run typecheck",
+      "problemMatcher": "$tsc"
+    },
+    { "label": "lint", "type": "shell", "command": "bun run lint", "problemMatcher": [] },
+    { "label": "format", "type": "shell", "command": "bun run format", "problemMatcher": [] },
+    { "label": "check", "type": "shell", "command": "bun run check", "problemMatcher": "$tsc" },
+    {
+      "label": "typecheck:watch",
+      "type": "shell",
+      "command": "bun run typecheck:watch",
+      "isBackground": true,
+      "problemMatcher": "$tsc-watch"
+    }
+  ]
+}

@@ -1,0 +1,137 @@
+{
+  "name": "vscode-review-bot",
+  "displayName": "Review Bot",
+  "version": "0.1.0",
+  "description": "A React webview alongside the native Changes and Graph views in Source Control.",
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "react",
+    "review",
+    "scm",
+    "webview"
+  ],
+  "license": "MIT",
+  "publisher": "local-dev",
+  "type": "module",
+  "main": "./dist/extension/extension.cjs",
+  "scripts": {
+    "build": "bun run lint && bun run typecheck && bun run build:extension && bun run build:webview",
+    "build:extension": "bun run scripts/build-extension.ts",
+    "build:webview": "vite build",
+    "dev": "bun run scripts/watch.ts",
+    "watch": "bun run dev",
+    "typecheck": "tsc -p tsconfig.extension.json && tsc -p tsconfig.webview.json && tsc -p tsconfig.tools.json",
+    "typecheck:watch": "tsc -p tsconfig.json --watch",
+    "test": "bun test",
+    "lint": "oxlint --deny-warnings .",
+    "lint:fix": "oxlint --fix --deny-warnings .",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
+    "check": "bun run lint && bun run format:check && bun run typecheck && bun run test",
+    "vscode:prepublish": "bun run build",
+    "package": "bun run scripts/package.ts",
+    "clean": "bun run scripts/clean.ts"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@types/bun": "1.3.13",
+    "@types/node": "20.19.43",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/vscode": "1.96.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "@vscode/vsce": "4.0.0",
+    "oxfmt": "0.72.0",
+    "oxlint": "1.87.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "5.9.3",
+    "vite": "8.3.4"
+  },
+  "contributes": {
+    "views": {
+      "scm": [
+        {
+          "type": "webview",
+          "id": "reviewBot.panel",
+          "name": "Review Bot",
+          "contextualTitle": "Review Bot",
+          "icon": "$(comment-discussion)",
+          "visibility": "collapsed"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "reviewBot.showPanel",
+        "title": "Open Panel",
+        "category": "Review Bot"
+      },
+      {
+        "command": "reviewBot.refresh",
+        "title": "Refresh Workspace",
+        "category": "Review Bot",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "reviewBot.reloadWebview",
+        "title": "Reload Webview",
+        "category": "Review Bot",
+        "icon": "$(debug-restart)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "reviewBot.refresh",
+          "when": "view == reviewBot.panel",
+          "group": "navigation@1"
+        },
+        {
+          "command": "reviewBot.reloadWebview",
+          "when": "view == reviewBot.panel",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Review Bot",
+      "properties": {
+        "reviewBot.greeting": {
+          "type": "string",
+          "default": "你好，来自 Extension Host！",
+          "maxLength": 500,
+          "description": "示例通信按钮返回的问候语。",
+          "scope": "window"
+        },
+        "reviewBot.showWorkspacePaths": {
+          "type": "boolean",
+          "default": true,
+          "description": "在面板中显示工作区路径。",
+          "scope": "window"
+        }
+      }
+    }
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "engines": {
+    "bun": ">=1.3.13",
+    "node": ">=22.12.0",
+    "vscode": "^1.96.0"
+  },
+  "packageManager": "bun@1.3.13",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  }
+}
