@@ -18,7 +18,7 @@
           },
           "background": {
             "activeOnStart": true,
-            "beginsPattern": "^\\[watch\\] starting",
+            "beginsPattern": "^\\[watch\\] (starting|building)",
             "endsPattern": "^\\[watch\\] ready"
           }
         }

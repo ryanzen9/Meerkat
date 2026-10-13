@@ -3,7 +3,5 @@
 !README.md
 !LICENSE
 !CHANGELOG.md
-!dist/extension/extension.cjs
-!dist/webview/main.js
-!dist/webview/style.css
-!dist/webview/THIRD_PARTY_LICENSES.md
+!dist/extension/**/*.cjs
+!dist/webview/**/!(*.map)

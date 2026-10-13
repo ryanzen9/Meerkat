@@ -13,7 +13,7 @@
       "env": { "browser": true }
     },
     {
-      "files": ["scripts/**/*.ts", "tests/**/*.ts", "vite.config.ts"],
+      "files": ["scripts/**/*.ts", "tests/**/*.ts", "vite.config.*.ts"],
       "env": { "node": true },
       "globals": { "Bun": "readonly" }
     },
