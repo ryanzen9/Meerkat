@@ -19,8 +19,8 @@
   "main": "./dist/extension/extension.cjs",
   "scripts": {
     "build": "bun run lint && bun run typecheck && bun run build:extension && bun run build:webview",
-    "build:extension": "bun run scripts/build-extension.ts",
-    "build:webview": "vite build",
+    "build:extension": "vite build --config vite.config.extension.ts",
+    "build:webview": "vite build --config vite.config.webview.ts",
     "dev": "bun run scripts/watch.ts",
     "watch": "bun run dev",
     "typecheck": "tsc -p tsconfig.extension.json && tsc -p tsconfig.webview.json && tsc -p tsconfig.tools.json",

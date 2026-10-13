@@ -1,12 +1,35 @@
-import { readdir, stat } from 'node:fs/promises';
+import { mkdir, open, readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildExtension, projectRoot } from './build-extension';
+
+const projectRoot = fileURLToPath(new URL('../', import.meta.url));
+const targets = ['extension', 'webview'] as const;
+type Target = (typeof targets)[number];
+
+let stopping = false;
+let activeBuild: { kill(signal?: number): void } | undefined;
+let killTimeout: ReturnType<typeof setTimeout> | undefined;
+
+function shutdown(): void {
+  if (stopping) return;
+  stopping = true;
+  if (activeBuild) {
+    activeBuild.kill();
+    killTimeout = setTimeout(() => activeBuild?.kill(9), 2000);
+  }
+}
+
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
 
 // Poll a small source tree. Native fs.watch/Rolldown watchers are unreliable on
 // mounted/network volumes; this detects new files and atomic editor saves too.
 async function fingerprint(path: string): Promise<string> {
-  const info = await stat(path);
+  const info = await stat(path).catch((error: unknown) => {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
+    throw error;
+  });
+  if (!info) return `${path}:missing`;
   if (!info.isDirectory()) return `${path}:${info.mtimeMs}:${info.size}`;
   const entries = await readdir(path, { withFileTypes: true });
   const children = await Promise.all(
@@ -15,65 +38,108 @@ async function fingerprint(path: string): Promise<string> {
       .toSorted((a, b) => a.name.localeCompare(b.name))
       .map((entry) => fingerprint(join(path, entry.name))),
   );
-  return children.join('|');
+  return `${path}/|${children.join('|')}`;
 }
 
-async function fingerprints() {
-  const [extension, shared, webview, config] = await Promise.all([
-    fingerprint(join(projectRoot, 'src/extension')),
-    fingerprint(join(projectRoot, 'src/shared')),
-    fingerprint(join(projectRoot, 'src/webview')),
-    fingerprint(join(projectRoot, 'vite.config.ts')),
-  ]);
-  return { extension: `${extension}|${shared}`, webview: `${webview}|${shared}|${config}` };
+async function fingerprints(): Promise<Record<Target, string>> {
+  const common = await Promise.all(
+    ['src/shared', 'package.json', 'tsconfig.base.json', 'tsconfig.json'].map((path) =>
+      fingerprint(join(projectRoot, path)),
+    ),
+  );
+  const [extension, webview] = await Promise.all(
+    targets.map(async (target) => {
+      const files = await Promise.all(
+        [`src/${target}`, `vite.config.${target}.ts`, `tsconfig.${target}.json`].map((path) =>
+          fingerprint(join(projectRoot, path)),
+        ),
+      );
+      return [...common, ...files].join('|');
+    }),
+  );
+  return { extension: extension!, webview: webview! };
 }
 
-async function buildWebview(): Promise<void> {
+async function build(target: Target): Promise<void> {
+  console.log(`[watch] building ${target}`);
   const child = Bun.spawn(
     [
       'node',
       fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url)),
       'build',
+      '--config',
+      `vite.config.${target}.ts`,
       '--mode',
       'development',
     ],
     { cwd: projectRoot, stdout: 'inherit', stderr: 'inherit' },
   );
-  if ((await child.exited) !== 0) throw new Error('Webview build failed');
+  activeBuild = child;
+  try {
+    const exitCode = await child.exited;
+    if (stopping) return;
+    if (exitCode !== 0) throw new Error(`${target} build failed (exit ${exitCode})`);
+    console.log(`[watch] built ${target}`);
+  } finally {
+    activeBuild = undefined;
+  }
 }
 
-console.log('[watch] starting');
-let previous = await fingerprints();
-await buildExtension();
-await buildWebview();
-console.log('[watch] ready');
+await mkdir(join(projectRoot, 'dist'), { recursive: true });
+const lockPath = join(projectRoot, 'dist/.watch.lock');
+const lock = await open(lockPath, 'wx').catch((error: unknown) => {
+  throw new Error(
+    'Cannot start dev. Terminate the existing dev task first. If it was force-killed, ' +
+      'confirm it has stopped before removing dist/.watch.lock.',
+    { cause: error },
+  );
+});
 
-let running = false;
-let stopping = false;
-const poll = setInterval(() => {
-  if (running || stopping) return;
-  running = true;
-  void (async () => {
+try {
+  await lock.writeFile(String(process.pid));
+  console.log('[watch] starting');
+  const previous: Partial<Record<Target, string>> = {};
+  const failed: Partial<Record<Target, string>> = {};
+  let ready = false;
+
+  // Signal handlers update this condition while builds or polling are awaited.
+  // oxlint-disable-next-line no-unmodified-loop-condition
+  while (!stopping) {
     try {
       const current = await fingerprints();
-      const extensionChanged = current.extension !== previous.extension;
-      const webviewChanged = current.webview !== previous.webview;
-      previous = current;
-      if (extensionChanged) await buildExtension();
-      if (webviewChanged) await buildWebview();
+      let attempted = false;
+      for (const target of targets) {
+        if (stopping) break;
+        if (current[target] === previous[target] || current[target] === failed[target]) continue;
+        attempted = true;
+        try {
+          await build(target);
+          if (!stopping) {
+            previous[target] = current[target];
+            delete failed[target];
+          }
+        } catch (error) {
+          failed[target] = current[target];
+          console.error(error);
+        }
+      }
+      // Do not release F5 against stale output, including edits made during a build.
+      const latest = await fingerprints();
+      if (
+        !stopping &&
+        (attempted || !ready) &&
+        targets.every((target) => previous[target] === latest[target])
+      ) {
+        ready = true;
+        console.log('[watch] ready');
+      }
     } catch (error) {
       console.error(error);
-    } finally {
-      running = false;
-      if (stopping) process.exit(0);
     }
-  })();
-}, 500);
-
-const shutdown = () => {
-  stopping = true;
-  clearInterval(poll);
-  if (!running) process.exit(0);
-};
-process.once('SIGINT', shutdown);
-process.once('SIGTERM', shutdown);
+    if (!stopping) await Bun.sleep(500);
+  }
+} finally {
+  if (killTimeout) clearTimeout(killTimeout);
+  await lock.close();
+  await rm(lockPath, { force: true });
+}
