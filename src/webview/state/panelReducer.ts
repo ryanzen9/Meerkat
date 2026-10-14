@@ -18,6 +18,8 @@ export function panelReducer(
       return { ...state, snapshot: message.snapshot, error: null };
     case 'host/error':
       return { ...state, error: message.message };
+    case 'host/action':
+      return { ...state, error: null };
     case 'host/hello':
       return {
         ...state,

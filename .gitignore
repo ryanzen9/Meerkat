@@ -5,3 +5,7 @@ artifacts/
 .DS_Store
 *.log
 .vscode-test/
+
+
+# AI Agent
+.agents/

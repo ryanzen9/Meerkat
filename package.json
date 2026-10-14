@@ -36,6 +36,8 @@
     "clean": "bun run scripts/clean.ts"
   },
   "dependencies": {
+    "@assistant-ui/react": "0.15.28",
+    "@assistant-ui/react-markdown": "0.14.22",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

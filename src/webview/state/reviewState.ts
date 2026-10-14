@@ -1,0 +1,99 @@
+import type { ChatMessage, ChatSession, ReviewTab, WebviewState } from '../../shared/models';
+import { isRecord } from '../../shared/protocol';
+
+export interface ReviewState {
+  activeTab: ReviewTab;
+  repositoryUri: string;
+  activeSessionId: string;
+  sessions: ChatSession[];
+}
+
+export function createSession(): ChatSession {
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    title: '新会话',
+    createdAt: now,
+    updatedAt: now,
+    draft: '',
+    messages: [],
+  };
+}
+
+function isChatMessage(value: unknown): value is ChatMessage {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    (value.role === 'user' || value.role === 'assistant') &&
+    typeof value.text === 'string' &&
+    value.text.length <= 4000 &&
+    typeof value.createdAt === 'string' &&
+    Number.isFinite(Date.parse(value.createdAt))
+  );
+}
+
+function isSession(value: unknown): value is ChatSession {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.title === 'string' &&
+    typeof value.createdAt === 'string' &&
+    Number.isFinite(Date.parse(value.createdAt)) &&
+    typeof value.updatedAt === 'string' &&
+    Number.isFinite(Date.parse(value.updatedAt)) &&
+    typeof value.draft === 'string' &&
+    Array.isArray(value.messages) &&
+    value.messages.every(isChatMessage) &&
+    new Set(value.messages.map(({ id }) => id)).size === value.messages.length
+  );
+}
+
+export function restoreReviewState(saved: unknown): ReviewState {
+  const data: WebviewState = isRecord(saved) ? saved : {};
+  const valid = Array.isArray(data.sessions) ? data.sessions.filter(isSession) : [];
+  const sessions = [...new Map(valid.map((session) => [session.id, session])).values()]
+    .slice(-20)
+    .map((session) => ({
+      ...session,
+      title: session.title.slice(0, 80),
+      draft: session.draft.slice(0, 4000),
+      messages: session.messages.slice(-100),
+    }));
+  if (!sessions.length) sessions.push(createSession());
+  const activeSessionId = sessions.some(({ id }) => id === data.activeSessionId)
+    ? data.activeSessionId!
+    : sessions[0]!.id;
+  return {
+    activeTab: data.activeTab === 'files' || data.activeTab === 'history' ? data.activeTab : 'chat',
+    repositoryUri: typeof data.repositoryUri === 'string' ? data.repositoryUri : '',
+    activeSessionId,
+    sessions,
+  };
+}
+
+export function appendTurn(state: ReviewState, text: string, reply: string): ReviewState {
+  const now = new Date().toISOString();
+  return {
+    ...state,
+    activeTab: 'chat',
+    sessions: state.sessions.map((session) =>
+      session.id !== state.activeSessionId
+        ? session
+        : {
+            ...session,
+            title: session.messages.length ? session.title : text.replace(/\s+/g, ' ').slice(0, 60),
+            updatedAt: now,
+            draft: '',
+            messages: [
+              ...session.messages,
+              { id: crypto.randomUUID(), role: 'user' as const, text, createdAt: now },
+              { id: crypto.randomUUID(), role: 'assistant' as const, text: reply, createdAt: now },
+            ].slice(-100),
+          },
+    ),
+  };
+}
+
+export function sessionMarkdown(session: ChatSession): string {
+  return `# ${session.title}\n\n${session.messages.map(({ role, text }) => `## ${role === 'user' ? 'You' : 'Review'}\n\n${text}`).join('\n\n')}`;
+}

@@ -1,19 +1,26 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { isExtensionMessage, isRecord } from '../../shared/protocol';
-import type { WebviewToExtensionMessage } from '../../shared/protocol';
+import { isExtensionMessage } from '../../shared/protocol';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/protocol';
 import { vscodeBridge } from '../services/vscode';
 import { initialPanelState, panelReducer } from '../state/panelReducer';
 
+type Request = Exclude<WebviewToExtensionMessage, { type: 'webview/ready' }>;
+type RequestInput = Request extends infer T
+  ? T extends Request
+    ? Omit<T, 'requestId'>
+    : never
+  : never;
+interface PendingRequest {
+  resolve(message: ExtensionToWebviewMessage): void;
+  reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export function usePanel() {
   const [state, dispatch] = useReducer(panelReducer, initialPanelState);
-  const [draftName, setDraftName] = useState(() => {
-    const saved = vscodeBridge.getState();
-    return isRecord(saved) && typeof saved.draftName === 'string'
-      ? saved.draftName.slice(0, 80)
-      : '';
-  });
-  const [busy, setBusy] = useState(false);
-  const pending = useRef<{ id: string; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const pending = useRef(new Map<string, PendingRequest>());
+  const refreshingRef = useRef(false);
 
   useEffect(() => {
     const handshakeTimeout = setTimeout(() => {
@@ -23,49 +30,68 @@ export function usePanel() {
       // VS Code forwards messages from its wrapper iframe, not from this window.
       if (!isExtensionMessage(event.data)) return;
       const message = event.data;
-      clearTimeout(handshakeTimeout);
       if ('requestId' in message && message.requestId) {
-        if (message.requestId !== pending.current?.id) return;
-        clearTimeout(pending.current.timer);
-        pending.current = null;
-        setBusy(false);
+        const request = pending.current.get(message.requestId);
+        if (!request) return;
+        clearTimeout(request.timer);
+        pending.current.delete(message.requestId);
+        if (message.type === 'host/error') request.reject(new Error(message.message));
+        else request.resolve(message);
       }
+      if (message.type === 'host/snapshot') clearTimeout(handshakeTimeout);
       dispatch(message);
     };
     window.addEventListener('message', onMessage);
     vscodeBridge.postMessage({ type: 'webview/ready' });
+    const requests = pending.current;
     return () => {
       window.removeEventListener('message', onMessage);
       clearTimeout(handshakeTimeout);
-      if (pending.current) clearTimeout(pending.current.timer);
-      pending.current = null;
+      requests.forEach(({ timer, reject }) => {
+        clearTimeout(timer);
+        reject(new Error('面板已关闭。'));
+      });
+      requests.clear();
     };
   }, []);
 
-  useEffect(() => {
-    vscodeBridge.setState({ draftName });
-  }, [draftName]);
+  const request = useCallback(
+    (message: RequestInput) =>
+      new Promise<ExtensionToWebviewMessage>((resolve, reject) => {
+        const requestId = crypto.randomUUID();
+        const timer = setTimeout(() => {
+          pending.current.delete(requestId);
+          const error = new Error('请求超时，请重试。');
+          dispatch({ type: 'host/error', message: error.message });
+          reject(error);
+        }, 15000);
+        pending.current.set(requestId, { resolve, reject, timer });
+        vscodeBridge.postMessage({ ...message, requestId });
+      }),
+    [],
+  );
 
-  const send = useCallback((message: WebviewToExtensionMessage & { requestId: string }) => {
-    if (pending.current) return;
-    setBusy(true);
-    pending.current = {
-      id: message.requestId,
-      timer: setTimeout(() => {
-        pending.current = null;
-        setBusy(false);
-        dispatch({ type: 'host/error', message: '请求超时，请刷新后重试。' });
-      }, 15000),
-    };
-    vscodeBridge.postMessage(message);
-  }, []);
+  const refresh = useCallback(async () => {
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    setRefreshing(true);
+    try {
+      await request({ type: 'workspace/refresh' });
+    } catch {
+      /* The host/timeout error is already displayed by the reducer. */
+    } finally {
+      refreshingRef.current = false;
+      setRefreshing(false);
+    }
+  }, [request]);
 
-  return {
-    ...state,
-    draftName,
-    setDraftName,
-    busy,
-    refresh: () => send({ type: 'workspace/refresh', requestId: crypto.randomUUID() }),
-    sayHello: () => send({ type: 'demo/hello', requestId: crypto.randomUUID(), name: draftName }),
-  };
+  const openFile = useCallback((uri: string) => request({ type: 'file/open', uri }), [request]);
+  const openCode = useCallback(
+    (code: string, language: string) => request({ type: 'code/open', code, language }),
+    [request],
+  );
+  const copy = useCallback((text: string) => request({ type: 'clipboard/write', text }), [request]);
+  const openSettings = useCallback(() => request({ type: 'settings/open' }), [request]);
+
+  return { ...state, refreshing, refresh, openFile, openCode, copy, openSettings };
 }

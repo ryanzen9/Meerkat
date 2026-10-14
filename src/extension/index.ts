@@ -7,19 +7,24 @@ import { GitService } from './services/GitService';
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Review Bot', { log: true });
+  const git = new GitService(output);
   const provider = new ReviewPanelProvider(
     context.extensionUri,
     {
       workspace: new WorkspaceService(),
       settings: new SettingsService(),
       state: new StateService(context.workspaceState),
-      git: new GitService(output),
+      git,
     },
     output,
   );
 
   context.subscriptions.push(
     output,
+    git,
+    git.onDidChange(() => {
+      void provider.refresh();
+    }),
     provider,
     vscode.window.registerWebviewViewProvider(ReviewPanelProvider.viewId, provider),
     vscode.commands.registerCommand('reviewBot.showPanel', async () => {

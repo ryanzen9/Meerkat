@@ -87,6 +87,50 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
         case 'workspace/refresh':
           await this.sendSnapshot(view, message.requestId);
           break;
+        case 'settings/open':
+          await vscode.commands.executeCommand(
+            'workbench.action.openSettings',
+            '@ext:local-dev.vscode-review-bot',
+          );
+          await this.post(view, { type: 'host/action', requestId: message.requestId });
+          break;
+        case 'clipboard/write':
+          await vscode.env.clipboard.writeText(message.text);
+          await this.post(view, { type: 'host/action', requestId: message.requestId });
+          break;
+        case 'code/open': {
+          const language =
+            (
+              {
+                ts: 'typescript',
+                tsx: 'typescriptreact',
+                js: 'javascript',
+                jsx: 'javascriptreact',
+                py: 'python',
+                sh: 'shellscript',
+                md: 'markdown',
+              } as Record<string, string>
+            )[message.language] ?? message.language;
+          const document = await vscode.workspace.openTextDocument({
+            content: message.code,
+            language: language || 'plaintext',
+          });
+          await vscode.window.showTextDocument(document, { preview: false });
+          await this.post(view, { type: 'host/action', requestId: message.requestId });
+          break;
+        }
+        case 'file/open': {
+          const uri = vscode.Uri.parse(message.uri, true);
+          if (
+            !['file', 'vscode-remote'].includes(uri.scheme) ||
+            !vscode.workspace.getWorkspaceFolder(uri)
+          )
+            throw new Error('File is outside the workspace');
+          const document = await vscode.workspace.openTextDocument(uri);
+          await vscode.window.showTextDocument(document, { preview: true, preserveFocus: true });
+          await this.post(view, { type: 'host/action', requestId: message.requestId });
+          break;
+        }
         case 'demo/hello': {
           const state = await this.services.state.incrementMessageCount();
           const name = message.name.trim() || '开发者';
@@ -126,7 +170,7 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
     this.output.error('Panel operation failed', error);
     await this.post(view, {
       type: 'host/error',
-      message: '读取面板数据失败，请刷新重试。',
+      message: '面板操作失败，请重试；文件可能已被删除或不在当前工作区中。',
       ...(requestId ? { requestId } : {}),
     });
   }

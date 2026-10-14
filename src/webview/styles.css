@@ -34,6 +34,23 @@
   --color-focus: var(--vscode-focusBorder);
   --color-error: var(--vscode-errorForeground);
   --color-contrast: var(--vscode-contrastBorder);
+  --color-surface: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+  --color-agent: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  --color-user: var(
+    --review-user-background,
+    var(--vscode-button-secondaryBackground, var(--vscode-input-background))
+  );
+  --color-user-foreground: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  --color-code: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
+  --color-link: var(--vscode-textLink-foreground);
+  --color-added: var(--vscode-gitDecoration-addedResourceForeground);
+  --color-modified: var(--vscode-gitDecoration-modifiedResourceForeground);
+  --color-deleted: var(--vscode-gitDecoration-deletedResourceForeground);
+  --color-hover: var(--vscode-list-hoverBackground);
+  --color-badge: var(--vscode-badge-background);
+  --color-badge-foreground: var(--vscode-badge-foreground);
+  --color-menu: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  --color-menu-foreground: var(--vscode-menu-foreground, var(--vscode-foreground));
 }
 
 @custom-variant high-contrast (&:where(.vscode-high-contrast *, .vscode-high-contrast-light *));
@@ -43,17 +60,57 @@
     @apply bg-sidebar font-sans text-vscode leading-[normal] font-vscode text-foreground scheme-light-dark;
   }
 
-  body {
-    @apply m-0 p-3;
+  html,
+  body,
+  #root {
+    @apply m-0 h-full min-w-0 overflow-hidden;
+  }
+
+  button,
+  summary,
+  select,
+  a,
+  [tabindex] {
+    @apply focus-visible:outline-1 focus-visible:outline-offset-[-2px] focus-visible:outline-focus;
+  }
+
+  button,
+  summary {
+    @apply cursor-pointer disabled:cursor-default disabled:opacity-50;
+  }
+
+  [hidden] {
+    display: none !important;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+  }
+
+  body.vscode-high-contrast *,
+  body.vscode-high-contrast-light * {
+    border-color: var(--vscode-contrastBorder, currentColor);
   }
 
   body.vscode-dark,
   body.vscode-high-contrast {
     @apply scheme-dark;
+    --review-user-background: var(--vscode-editor-background);
   }
 
   body.vscode-light,
   body.vscode-high-contrast-light {
     @apply scheme-light;
+  }
+}
+
+@layer components {
+  .icon-button {
+    @apply flex size-7 shrink-0 items-center justify-center rounded-sm text-muted hover:bg-hover hover:text-foreground;
+  }
+
+  .menu-item {
+    @apply block w-full rounded-sm px-3 py-2 text-left text-[0.9rem] hover:bg-hover;
   }
 }

@@ -14,7 +14,7 @@ code .
 
 在 VS Code 中按 **F5**，选择 `Run Review Bot Extension`。调试窗口打开后进入 **Source Control**，展开 **Review Bot**。也可以从命令面板执行 **Review Bot: Open Panel**。启动前的 `dev` 任务会等待 Extension 与 Webview 首轮构建完成。
 
-调试窗口可通过 **File → Open Folder** 打开目标工作区。未打开文件夹时也能使用通信示例，面板会显示空工作区状态。
+调试窗口可通过 **File → Open Folder** 打开目标工作区。未打开文件夹时，面板会显示空工作区和 Git 状态。
 
 面板默认折叠，由 VS Code 提供标题栏和折叠行为。名称及是否有 Graph 取决于 VS Code 版本和语言；视图的确切排序、高度和位置由 VS Code 与用户保存的布局决定。如果隐藏或移动过视图，可以通过 Source Control 的视图菜单启用，或执行 `View: Reset View Locations`。
 
@@ -79,20 +79,31 @@ HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview
 
 三个独立 tsconfig 限制环境：Host 只有 Node / VS Code 类型，Webview 只有 DOM / Vite 类型，工具脚本可以使用 Bun。根 tsconfig 用于编辑器和全项目监听。Shared 只包含 JSON 数据与纯校验函数，禁止引入任何运行平台 API。
 
-## 最小示例与消息协议
+## WebView 布局与交互
+
+面板采用全高布局：44px Header、72px Context / Status、40px 标签栏、可滚动内容和约 87–99px 的底部输入区。输入支持 Enter 发送、Shift+Enter 换行，以及中文输入法；多行内容在 36–48px 内自适应增长，超出后在输入框内滚动。滚动内容和长代码块不会移动 Header 或输入区，也不会撑宽侧栏。
+
+- **Chat**（默认）：基于 `assistant-ui` 的 `AssistantRuntimeProvider`、ExternalStoreRuntime 和 Thread primitives；消息支持安全 Markdown、可横向滚动的代码块、复制和在编辑器打开代码。文件引用采用 `[文件名](review-file:编码后的文件URI)`，点击后由 Host 检查工作区范围再打开。
+- **Files**：按 Changes / Staged Changes 显示当前仓库未暂存、已暂存的真实 Git 变更，包含未跟踪文件和冲突。新增 / 修改（含重命名）/ 删除使用 Git 主题颜色及 A / M / R / D / U 字符区分。仓库、分支、暂存或工作树变化会自动同步；多仓库可在上下文区切换。顶部数量按文件 URI 去重，避免重复计算部分暂存的文件。
+- **History**：恢复已有会话并回到 Chat；输入区的加号新建会话。草稿、选中标签、仓库和最近 20 个会话（每个最多 100 条消息）通过 VS Code Webview state 保存，输入上限 4000 字符。
+- **更多操作**：打开扩展设置、会话历史或将当前会话作为未保存的 Markdown 文档打开，可自行保存导出。
+
+**当前阶段尚未接入 AI 模型或 PR 服务。** 发送问题会保存用户消息，并显示模型尚未配置的提示。刷新读取工作区状态；不会生成模拟审查结果。`useReviewChat` 的 `onNew` 是后续模型接入点。可选 `PanelSnapshot.review` 元数据支持 PR 编号和 Idle / Analyzing… / Issues / Ready 徽章，仅对匹配的仓库显示；没有该元数据时使用真实工作区名和 Idle 状态。
+
+## 消息协议
 
 - 打开视图后，Webview 注册监听，再发送 `webview/ready`；Host 返回 `host/snapshot`。
-- **刷新工作区**发送 `workspace/refresh`，返回工作区名称、多根目录、信任状态、配置、持久化状态以及可用的 Git 仓库分支。
-- 输入称呼并点击 **发送问候**，发送 `demo/hello`；Host 返回 `host/hello`，通信次数写入当前工作区的 `workspaceState`。
-- 工作区目录、信任和扩展配置变化会主动推送新快照；Git 仓库变化目前通过刷新获取。
+- **刷新工作区**发送 `workspace/refresh`，返回工作区、配置及仓库分支、remote 名称、Changes 和 Staged Changes。
+- `file/open`、`code/open`、`clipboard/write` 和 `settings/open` 只执行相应的固定编辑器操作，以 `host/action` 确认成功；代码以未保存的文档打开，不直接修改工作区文件。原有 `demo/hello` 协议保留兼容。
+- 工作区目录、信任、扩展配置和 Git 状态变化会主动推送新快照。
 
-请求和回复通过 `requestId` 对应。请求超时显示可重试错误；过期回复会被忽略。两端都以 `unknown` 接收数据，并通过共享协议校验，Host 只执行白名单中的消息类型，不提供任意命令执行接口。称呼上限 80 字符。新增功能时先扩展 `shared/models.ts` 与 `shared/protocol.ts`（联合类型和校验），然后添加 Service、Provider 分支及 UI。
+并行请求和回复通过独立 `requestId` 对应。请求超时显示可重试错误；过期回复会被忽略。两端都以 `unknown` 接收数据，并通过共享协议校验，Host 只执行白名单中的消息类型。文件打开限制为当前工作区内的 `file` / `vscode-remote` URI；代码、剪贴板与语言标记有长度限制。新增功能时先扩展 `shared/models.ts` 与 `shared/protocol.ts`（联合类型和校验），然后添加 Service、Provider 分支及 UI。
 
 ## 扩展接口
 
-**Git**：`GitService.getApi()` 惰性激活内置 `vscode.git` 并请求公开 `getAPI(1)`，当前只读取仓库与分支。Git 未启用、无仓库或受限模式均有空状态。使用的是公开接口的最小结构类型；新增仓库事件、diff 或 review 功能时，根据官方 `git.d.ts` 补充类型和 Service。无需强制 `extensionDependencies`，也不创建替代内置 Git 的 SourceControl Provider。
+**Git**：`GitService.getApi()` 惰性激活内置 `vscode.git` 并请求公开 `getAPI(1)`，读取仓库、分支、remote 名称及工作树 / index / untracked / merge 变更，并订阅仓库打开、关闭和状态变化事件。监听器由扩展生命周期统一释放。Git 未启用、无仓库或受限模式均有空状态。使用的是公开接口的最小结构类型；新增 diff 或 review 功能时，根据官方 `git.d.ts` 补充类型和 Service。无需强制 `extensionDependencies`，也不创建替代内置 Git 的 SourceControl Provider。
 
-**状态管理**：Webview 使用 `useReducer` 管理业务状态，`usePanel` 管理通信；需求增长后可在 `state/` 替换为独立 store。Host 的 `StateService` 串行写入 `workspaceState`，避免并发丢失；跨工作区数据可以另加 `globalState`。Webview 的输入草稿通过 `getState` / `setState` 保存，不依赖 `retainContextWhenHidden`。
+**状态管理**：Webview 使用 `useReducer` 管理业务状态，`usePanel` 管理通信；需求增长后可在 `state/` 替换为独立 store。Host 的 `StateService` 串行写入 `workspaceState`，避免并发丢失；跨工作区数据可以另加 `globalState`。Webview 的会话、输入草稿与布局选择通过 `getState` / `setState` 保存，不依赖 `retainContextWhenHidden`。
 
 **配置持久化**：`SettingsService` 读取 VS Code Configuration API，配置由 VS Code 持久化。在 Settings 中搜索 `Review Bot`，或设置：
 
@@ -145,7 +156,7 @@ code --install-extension artifacts/vscode-review-bot-0.1.0.vsix
 ### 人工调试与安装验证
 
 1. 按 F5，确认 `dev` 任务完成两个首次构建后才启动 Extension Development Host；在源码入口设置断点，检查 Host source map。
-2. 展开 Source Control 中的 Review Bot，检查工作区、Git、刷新和问候回复；折叠再展开，确认草稿与通信次数保持，原生 Changes / Graph 继续可用。
+2. 展开 Source Control 中的 Review Bot，检查固定布局、Git 变更、刷新、聊天与历史；折叠再展开，确认草稿与会话保持，原生 Changes / Graph 继续可用。
 3. 修改 React / CSS，等待 `[watch] ready` 后点击 **Reload Webview**；修改 Host 后重启调试会话。检查控制台没有资源 404、CSP 或模块加载错误。
 4. 切换深色、浅色及高对比主题，检查窄侧栏布局、输入框、按钮和焦点样式。
 5. 结束 `dev`，运行 `bun run package` 并安装 VSIX；关闭构建终端，在普通 VS Code 窗口重复上述功能检查。安装后无需 Bun、Vite 或 HTTP Server。
