@@ -232,10 +232,14 @@ test('loopback server enforces bearer capability, origin whitelist, Host and siz
     expect(ok.headers.get('cache-control')).toBe('no-store');
     const large = await fetch(`${connection.baseUrl}/v1/sessions`, {
       method: 'POST',
-      headers: { ...headers, 'content-type': 'application/json' },
+      // A 413 can arrive before Bun finishes uploading; keep that rejected
+      // upload's socket out of the next request's connection pool.
+      headers: { ...headers, 'content-type': 'application/json', connection: 'close' },
       body: 'a'.repeat(1048577),
     });
     expect(large.status).toBe(413);
+    // Consume the complete rejection response as well as checking its status.
+    await large.arrayBuffer();
     expect((await fetch(`${connection.baseUrl}/auth/callback?state=invalid`)).status).toBe(400);
   } finally {
     await server.close();

@@ -3,6 +3,7 @@ export interface AccountStatus {
   authenticated: boolean;
   activeAccountId?: string;
   signInPending?: boolean;
+  signInError?: string;
   accounts: { id: string; email?: string; subject: string; signedIn: boolean }[];
 }
 

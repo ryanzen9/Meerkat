@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { z } from 'zod';
-import { BridgeError } from '../errors';
+import { BridgeError, publicError } from '../errors';
 import type { Exclusive, SecretStore } from './storage';
 import type { HttpFetch } from '../http';
 import type { AccountStatus } from '../providers/types';
@@ -65,6 +65,7 @@ interface Pending {
   expiresAt: number;
   registrationId?: string;
   clientId: string;
+  requestedScopes: string[];
 }
 export interface ChatGPTAuthOptions {
   secrets: SecretStore;
@@ -76,6 +77,7 @@ export interface ChatGPTAuthOptions {
 
 export class ChatGPTAuth {
   private pending: Pending | undefined;
+  private signInError: string | undefined;
   private discovery: Promise<Discovery> | undefined;
   private readonly http: HttpFetch;
   private readonly now: () => number;
@@ -179,11 +181,16 @@ export class ChatGPTAuth {
 
   status(): Promise<AccountStatus> {
     return this.options.exclusive(async () => {
+      if (this.pending && this.pending.expiresAt <= this.now()) {
+        this.pending = undefined;
+        this.signInError = 'ChatGPT sign-in timed out. Please retry.';
+      }
       const vault = await this.load();
       const active = vault.registrations.find((r) => r.id === vault.activeId);
       return {
         authenticated: !!active?.tokens,
         signInPending: !!this.pending && this.pending.expiresAt > this.now(),
+        ...(this.signInError ? { signInError: this.signInError } : {}),
         ...(active?.tokens ? { activeAccountId: active.id } : {}),
         accounts: vault.registrations.map((r) => ({
           id: r.id,
@@ -223,15 +230,17 @@ export class ChatGPTAuth {
         redirectUri,
         expiresAt: this.now() + 5 * 60000,
         clientId: registration?.clientId ?? 'dynamic_agent_client',
+        requestedScopes: [...CHATGPT_SCOPES],
         ...(registration ? { registrationId: registration.id } : {}),
       };
       this.pending = pending;
+      this.signInError = undefined;
       const url = new URL(config.authorization_endpoint);
       const params: Record<string, string> = {
         client_id: pending.clientId,
         response_type: 'code',
         redirect_uri: redirectUri,
-        scope: CHATGPT_SCOPES.join(' '),
+        scope: pending.requestedScopes.join(' '),
         resource: CHATGPT_RESOURCE,
         state: pending.state,
         nonce: pending.nonce,
@@ -263,82 +272,91 @@ export class ChatGPTAuth {
           'Invalid or expired OAuth state. Restart sign-in.',
         );
       this.pending = undefined; // One-time consumption, including access_denied and failed exchanges.
-      for (const key of ['state', 'code', 'client_id', 'error'])
-        if (params.getAll(key).length > 1)
-          throw new BridgeError('oauth_callback_invalid', 'Duplicate OAuth callback parameter.');
-      if (params.has('error'))
-        throw new BridgeError('oauth_denied', 'ChatGPT authorization was declined.');
-      const code = params.get('code');
-      const clientId = params.get('client_id') ?? pending.clientId;
-      if (
-        !code ||
-        !clientId.startsWith('oaiapp_') ||
-        clientId.length > 256 ||
-        (pending.registrationId && clientId !== pending.clientId)
-      )
-        throw new BridgeError(
-          'oauth_client_invalid',
-          'OAuth registration returned an invalid client ID.',
-        );
-      const vault = await this.load();
-      const config = await this.discover();
-      const response = tokenResponseSchema.parse(
-        await this.request(
-          config.token_endpoint,
-          new URLSearchParams({
-            grant_type: 'authorization_code',
-            client_id: clientId,
-            code,
-            code_verifier: pending.verifier,
-            redirect_uri: pending.redirectUri,
-            resource: CHATGPT_RESOURCE,
-          }),
-        ),
-      );
-      if (!response.id_token)
-        throw new BridgeError('id_token_missing', 'OpenAI did not return an ID token.', 401);
-      let identity: JWTPayload;
       try {
-        identity = await this.verify(response.id_token, clientId, config);
-      } catch {
-        throw new BridgeError('id_token_invalid', 'OpenAI identity verification failed.', 401);
+        for (const key of ['state', 'code', 'client_id', 'error'])
+          if (params.getAll(key).length > 1)
+            throw new BridgeError('oauth_callback_invalid', 'Duplicate OAuth callback parameter.');
+        if (params.has('error'))
+          throw new BridgeError('oauth_denied', 'ChatGPT authorization was declined.');
+        const code = params.get('code');
+        const clientId = params.get('client_id') ?? pending.clientId;
+        if (
+          !code ||
+          !clientId.startsWith('oaiapp_') ||
+          clientId.length > 256 ||
+          (pending.registrationId && clientId !== pending.clientId)
+        )
+          throw new BridgeError(
+            'oauth_client_invalid',
+            'OAuth registration returned an invalid client ID.',
+          );
+        const vault = await this.load();
+        const config = await this.discover();
+        const response = tokenResponseSchema.parse(
+          await this.request(
+            config.token_endpoint,
+            new URLSearchParams({
+              grant_type: 'authorization_code',
+              client_id: clientId,
+              code,
+              code_verifier: pending.verifier,
+              redirect_uri: pending.redirectUri,
+              resource: CHATGPT_RESOURCE,
+            }),
+          ),
+        );
+        if (!response.id_token)
+          throw new BridgeError('id_token_missing', 'OpenAI did not return an ID token.', 401);
+        let identity: JWTPayload;
+        try {
+          identity = await this.verify(response.id_token, clientId, config);
+        } catch {
+          throw new BridgeError('id_token_invalid', 'OpenAI identity verification failed.', 401);
+        }
+        if (identity.nonce !== pending.nonce || !identity.sub)
+          throw new BridgeError(
+            'id_token_invalid',
+            'OpenAI identity nonce or subject is invalid.',
+            401,
+          );
+        const existing = vault.registrations.find((r) => r.id === pending.registrationId);
+        if (existing && existing.subject !== identity.sub)
+          throw new BridgeError(
+            'account_mismatch',
+            'ChatGPT account differs from the selected registration.',
+            401,
+          );
+        const tokens = this.tokens(response, undefined, pending.requestedScopes);
+        const registration: ChatGPTRegistration = {
+          id: existing?.id ?? randomUUID(),
+          clientId,
+          issuer: CHATGPT_ISSUER,
+          subject: identity.sub,
+          ...(typeof identity.email === 'string' ? { email: identity.email } : {}),
+          tokens,
+        };
+        vault.registrations = vault.registrations.filter((r) => r.id !== registration.id);
+        vault.registrations.push(registration);
+        vault.activeId = registration.id;
+        await this.save(vault);
+      } catch (error) {
+        this.signInError = publicError(error).message;
+        throw error;
       }
-      if (identity.nonce !== pending.nonce || !identity.sub)
-        throw new BridgeError(
-          'id_token_invalid',
-          'OpenAI identity nonce or subject is invalid.',
-          401,
-        );
-      const existing = vault.registrations.find((r) => r.id === pending.registrationId);
-      if (existing && existing.subject !== identity.sub)
-        throw new BridgeError(
-          'account_mismatch',
-          'ChatGPT account differs from the selected registration.',
-          401,
-        );
-      const tokens = this.tokens(response);
-      const registration: ChatGPTRegistration = {
-        id: existing?.id ?? randomUUID(),
-        clientId,
-        issuer: CHATGPT_ISSUER,
-        subject: identity.sub,
-        ...(typeof identity.email === 'string' ? { email: identity.email } : {}),
-        tokens,
-      };
-      vault.registrations = vault.registrations.filter((r) => r.id !== registration.id);
-      vault.registrations.push(registration);
-      vault.activeId = registration.id;
-      await this.save(vault);
     });
   }
 
   private tokens(
     response: z.infer<typeof tokenResponseSchema>,
     previous?: z.infer<typeof tokensSchema>,
+    requestedScopes: string[] = [],
   ) {
     if (response.token_type.toLowerCase() !== 'bearer')
       throw new BridgeError('token_type_invalid', 'Unsupported OAuth token type.', 401);
-    const scopes = response.scope?.split(/\s+/).filter(Boolean) ?? previous?.scopes ?? [];
+    // RFC 6749 §5.1: an omitted scope means the grant matches the request.
+    // Explicit empty/reduced grants must still pass the permission checks below.
+    const scopes =
+      response.scope?.split(/\s+/).filter(Boolean) ?? previous?.scopes ?? requestedScopes;
     if (
       !['resource.invoke', 'chatgpt.tokens.use.direct', 'offline_access'].every((scope) =>
         scopes.includes(scope),
@@ -444,6 +462,7 @@ export class ChatGPTAuth {
 
   logout(): Promise<{ remoteRevocationConfirmed: boolean }> {
     this.pending = undefined;
+    this.signInError = undefined;
     return this.options.exclusive(async () => {
       const vault = await this.load();
       const registration = vault.registrations.find((r) => r.id === vault.activeId);

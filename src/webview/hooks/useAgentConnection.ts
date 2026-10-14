@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { bridgeFetch } from '../services/bridgeFetch';
+import { bridgeJson } from '../services/bridgeApi';
 
 interface Account {
   id: string;
@@ -11,48 +11,63 @@ interface Status {
   authenticated: boolean;
   activeAccountId?: string;
   signInPending?: boolean;
+  signInError?: string;
   accounts: Account[];
 }
 interface Model {
   id: string;
   name: string;
 }
-export async function bridgeJson<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  const response = await bridgeFetch(path, {
-    method,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
-  const value = await response.json();
-  if (!response.ok) throw new Error(value.error?.message ?? 'Bridge request failed');
-  return value as T;
-}
-
 export function useAgentConnection() {
   const [status, setStatus] = useState<Status>({ authenticated: false, accounts: [] });
   const [models, setModels] = useState<Model[]>([]);
   const [model, setModel] = useState('');
   const [error, setError] = useState('');
   const [waiting, setWaiting] = useState(false);
+  const waitingRef = useRef(false);
   const expectedAccount = useRef<string | undefined>(undefined);
   const accountBeforeLogin = useRef<string | undefined>(undefined);
   const previousAccount = useRef<string | undefined>(undefined);
   const refresh = useCallback(async () => {
     const next = await bridgeJson<Status>('/v1/providers/openai-agents/auth');
     setStatus(next);
+    let attemptError = '';
+    if (waitingRef.current && !next.signInPending) {
+      // End the attempt independently of authentication/model loading success.
+      waitingRef.current = false;
+      setWaiting(false);
+      const succeeded =
+        next.authenticated &&
+        (expectedAccount.current
+          ? next.activeAccountId === expectedAccount.current
+          : next.activeAccountId !== accountBeforeLogin.current);
+      attemptError = next.signInError ?? (succeeded ? '' : 'ChatGPT 授权未完成，请重试。');
+    }
+    setError(attemptError);
     if (next.authenticated) {
-      const catalog = await bridgeJson<Model[]>('/v1/providers/openai-agents/models');
-      setModels(catalog);
-      setModel((current) =>
-        next.activeAccountId === previousAccount.current && catalog.some((m) => m.id === current)
-          ? current
-          : (catalog[0]?.id ?? ''),
-      );
-      previousAccount.current = next.activeAccountId;
+      if (next.activeAccountId !== previousAccount.current) {
+        setModels([]);
+        setModel('');
+      }
+      try {
+        const catalog = await bridgeJson<Model[]>('/v1/providers/openai-agents/models');
+        setModels(catalog);
+        setModel((current) =>
+          next.activeAccountId === previousAccount.current && catalog.some((m) => m.id === current)
+            ? current
+            : (catalog[0]?.id ?? ''),
+        );
+        previousAccount.current = next.activeAccountId;
+      } catch (failure) {
+        setError(
+          attemptError ||
+            (failure instanceof Error ? failure.message : 'Model catalog unavailable'),
+        );
+      }
     } else {
       setModels([]);
       setModel('');
     }
-    setError('');
     return next;
   }, []);
   useEffect(() => {
@@ -65,22 +80,16 @@ export function useAgentConnection() {
       if (polling) return;
       polling = true;
       void refresh()
-        .then((next) => {
-          if (
-            !next.signInPending &&
-            next.authenticated &&
-            (expectedAccount.current
-              ? next.activeAccountId === expectedAccount.current
-              : next.activeAccountId !== accountBeforeLogin.current)
-          )
-            setWaiting(false);
-        })
         .catch((failure: Error) => setError(failure.message))
         .finally(() => {
           polling = false;
         });
     }, 2000);
-    const deadline = setTimeout(() => setWaiting(false), 5 * 60000);
+    const deadline = setTimeout(() => {
+      waitingRef.current = false;
+      setWaiting(false);
+      setError('ChatGPT 授权等待超时，请重试。');
+    }, 5 * 60000);
     return () => {
       clearInterval(timer);
       clearTimeout(deadline);
@@ -91,6 +100,7 @@ export function useAgentConnection() {
       expectedAccount.current = accountId;
       accountBeforeLogin.current = status.activeAccountId;
       await bridgeJson('/v1/providers/openai-agents/login', 'POST', accountId ? { accountId } : {});
+      waitingRef.current = true;
       setWaiting(true);
       setError('');
     } catch (failure) {
@@ -99,6 +109,7 @@ export function useAgentConnection() {
   };
   const logout = async () => {
     try {
+      waitingRef.current = false;
       setWaiting(false);
       const result = await bridgeJson<{ remoteRevocationConfirmed: boolean }>(
         '/v1/providers/openai-agents/logout',

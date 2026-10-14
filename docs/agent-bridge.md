@@ -21,6 +21,10 @@ code .
 
 **账户与工作区准入：**官方文档描述的是 ChatGPT plan usage 预览。实际准入、订阅、workspace policy、模型、额度和工具权限以 OpenAI 的授权与接口返回为准。不能用一个有效 ID Token 推断推理权限；Bridge 检查 token response 中的 plan usage scopes。
 
+授权响应省略 `scope` 时使用本次请求的 scopes；显式返回空值或缩减权限仍会被拒绝。拒绝授权或回调验证失败会结束等待、显示安全的失败原因并允许立即重试，已有 active account 保留。
+
+选择历史会话时，模型选择框显示该会话绑定的模型；账户不匹配或模型不可用时给出提示。只有文字摘要、没有 Host 会话标识的旧历史，以及 Host 重启后失效的历史，需要新建会话。超过最近 20 个会话的限制时，面板会删除被移除的 Host 会话；失败的删除保存在 webview state 中，自动重试并在重新打开面板后继续处理。
+
 ## 从 HTTP API 验证真实推理
 
 登录后执行 **Review Bot: Export Bridge Connection for API Testing**。提示给出 Host `globalStorageUri` 下的 `bridge-PID.json` 路径。文件以 `0600` 写入，仅包含本次进程的本地 Bridge 地址和访问凭据，关闭扩展时删除。该凭据可以在当前登录账户下调度推理；请仅交给受信任的本地客户端。它不包含 OAuth access/refresh/ID token。
@@ -62,7 +66,7 @@ curl -N -D /tmp/review-bot-stream-headers "$BRIDGE_URL/v1/sessions/$BRIDGE_SESSI
 | 方法         | 路径                        | 输入 / 输出                                                         |
 | ------------ | --------------------------- | ------------------------------------------------------------------- |
 | GET          | `/v1/providers`             | Provider 描述与能力                                                 |
-| GET          | `/v1/providers/:id/auth`    | 登录状态、账户标识，包含当前授权是否 pending；无令牌                |
+| GET          | `/v1/providers/:id/auth`    | 登录状态、账户标识、授权 pending 与可选的安全 `signInError`；无令牌 |
 | POST         | `/v1/providers/:id/login`   | `{}` 新注册，或 `{accountId}` 复用保存的注册；Host 打开浏览器       |
 | GET          | `/auth/callback`            | 官方 OAuth query；验证 state 后交换 code，仅返回固定文本            |
 | POST         | `/v1/providers/:id/logout`  | 清除本机凭据并返回 `remoteRevocationConfirmed`                      |
@@ -130,7 +134,8 @@ HTTP 仅绑定 `127.0.0.1`，校验 exact Host、随机访问凭据和 Origin �
 - 首版工具仅启用 namespaced 本地 Function Tool。Hosted MCP、tool search、image generation、file search、Code Interpreter、native computer use、平台 Files API 和 audio/video 输入没有启用；请求校验拒绝非 text 用户输入。工具执行不会读写工作区文件，也不运行 shell。
 - API 不接受任意 Agent instructions 或前端工具执行/approval-resume。`/v1/chat` 不重复追加客户端 transcript；新增用户 turn 由 Host session 管理。多个账户的注册可保存，但首版只有一个 active account，不是面向远程多用户的服务。
 - OAuth 登录持久化；Host Agent 会话暂存内存，每会话最多 2 MiB、最多 100 个会话，运行状态保留约 200 条。Host 重启后必须新建 Agent 会话。webview 继续保存最近 20 个会话的文字摘要，每条最多 4000 字符；工具 UI 在当前运行中可见，历史摘要不包含完整工具部件。没有宣称实现断线恢复或持久化 Agent 历史。
-- **尚未验证：**真实用户账户的首次注册、refresh/revoke、模型目录与额度推理；VS Code SecretStorage 在实际 OS 凭据后端的行为；实际 VS Code UI 与最低支持版本。自动测试使用显式的 HTTP/OAuth fixtures 与签名 JWT，并运行真实 SDK/协议转换器，不是线上授权成功的证明。上面的 smoke 脚本提供真实账户验收路径。
+- **已由用户手动验收：**本轮审查修复前的真实登录与发送消息获得响应。新增回归测试挂载真实 React 界面，经过 IPC 代理、Bridge API 和 SessionStore，覆盖授权失败重试、旧历史保护、模型/账户绑定、连续创建 105 个会话及失败删除的恢复。
+- **尚未验证：**真实账户的 refresh/revoke、完整模型目录与额度边界；最低支持版本及各 OS 凭据后端。新增边界场景的自动测试使用显式 HTTP/OAuth fixtures、签名 JWT 和替代远端 Provider；真实 SDK/协议转换器由独立测试覆盖。上面的 smoke 脚本提供真实账户验收路径。
 
 ```sh
 bun run check

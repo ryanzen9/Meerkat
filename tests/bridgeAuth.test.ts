@@ -21,7 +21,7 @@ async function fixture() {
   let failRefresh = false;
   let failRevocation = false;
   let wrongSignature = false;
-  let scopes = CHATGPT_SCOPES.join(' ');
+  let scopes: string | undefined = CHATGPT_SCOPES.join(' ');
   const requests: URLSearchParams[] = [];
   const http: HttpFetch = async (input, init) => {
     const url = String(input);
@@ -65,7 +65,7 @@ async function fixture() {
       id_token: idToken,
       token_type: 'Bearer',
       expires_in: 3600,
-      scope: scopes,
+      ...(scopes !== undefined ? { scope: scopes } : {}),
     });
   };
   const auth = new ChatGPTAuth({
@@ -119,7 +119,7 @@ async function fixture() {
     wrongSignature: () => {
       wrongSignature = true;
     },
-    scopes: (value: string) => {
+    scopes: (value: string | undefined) => {
       scopes = value;
     },
   };
@@ -203,6 +203,54 @@ test('requires plan scopes, rejects missing issued client and account substituti
   );
   saved.claims({ sub: 'another-account' });
   await expect(saved.callback(await saved.login(accountId))).rejects.toThrow('differs');
+});
+
+test('omitted initial scope inherits this authorization request, while explicit empty/reduced grants fail', async () => {
+  const f = await fixture();
+  f.scopes(undefined);
+  const url = await f.login();
+  await f.callback(url);
+  const status = await f.auth.status();
+  const credential = await f.auth.credential(status.activeAccountId!);
+  expect(credential.tokens.scopes).toEqual(url.searchParams.get('scope')!.split(' '));
+  f.advance();
+  expect((await f.auth.credential(status.activeAccountId!)).tokens.scopes).toEqual(
+    credential.tokens.scopes,
+  );
+  expect(f.refreshCount()).toBe(1);
+
+  for (const scope of ['', 'openid profile email']) {
+    const denied = await fixture();
+    denied.scopes(scope);
+    await expect(denied.callback(await denied.login())).rejects.toThrow('authorized');
+    expect((await denied.auth.status()).authenticated).toBe(false);
+  }
+});
+
+test('ended authorization reports a sanitized failure, and retry clears it without replacing the active account', async () => {
+  const f = await fixture();
+  await f.callback(await f.login());
+  const activeId = (await f.auth.status()).activeAccountId!;
+  const pending = await f.login(activeId);
+  expect((await f.auth.status()).signInPending).toBe(true);
+  await expect(f.callback(pending, { error: 'access_denied' })).rejects.toThrow('declined');
+  const failed = await f.auth.status();
+  expect(failed.signInPending).toBe(false);
+  expect(failed.signInError).toContain('declined');
+  expect(failed.activeAccountId).toBe(activeId);
+  expect(failed.authenticated).toBe(true);
+  await f.login(activeId);
+  expect((await f.auth.status()).signInError).toBeUndefined();
+});
+
+test('callback identity failure ends the pending attempt and exposes only a public error', async () => {
+  const f = await fixture();
+  f.wrongSignature();
+  await expect(f.callback(await f.login())).rejects.toThrow('identity');
+  const status = await f.auth.status();
+  expect(status.signInPending).toBe(false);
+  expect(status.signInError).toBe('OpenAI identity verification failed.');
+  expect(JSON.stringify(status)).not.toMatch(/test-access|test-refresh|id_token/);
 });
 
 test('concurrent refreshes rotate once, persist together and clear invalid credentials', async () => {
