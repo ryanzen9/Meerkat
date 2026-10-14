@@ -83,7 +83,7 @@ HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview
 
 面板采用全高布局：44px Header、72px Context / Status、40px 标签栏、可滚动内容和约 87–99px 的底部输入区。输入支持 Enter 发送、Shift+Enter 换行，以及中文输入法；多行内容在 36–48px 内自适应增长，超出后在输入框内滚动。滚动内容和长代码块不会移动 Header 或输入区，也不会撑宽侧栏。
 
-- **Chat**（默认）：基于 `assistant-ui` 的 `AssistantRuntimeProvider`、ExternalStoreRuntime 和 Thread primitives；消息支持安全 Markdown、可横向滚动的代码块、复制和在编辑器打开代码。文件引用采用 `[文件名](review-file:编码后的文件URI)`，点击后由 Host 检查工作区范围再打开。
+- **Chat**（默认）：基于 `assistant-ui` 的 `AssistantRuntimeProvider`、ExternalStoreRuntime 和 Thread primitives；消息布局采用官方 `elements-message-pair` 的 Runtime 方案：用户消息为右侧圆角气泡，助手回复为无气泡正文，悬停或键盘聚焦显示回复复制按钮。通过 Extension Host 复制完整回复；当前不提供重生成或模拟流式动画。消息支持安全 Markdown、可横向滚动的代码块、复制和在编辑器打开代码。文件引用采用 `[文件名](review-file:编码后的文件URI)`，点击后由 Host 检查工作区范围再打开。
 - **Files**：按 Changes / Staged Changes 显示当前仓库未暂存、已暂存的真实 Git 变更，包含未跟踪文件和冲突。新增 / 修改（含重命名）/ 删除使用 Git 主题颜色及 A / M / R / D / U 字符区分。仓库、分支、暂存或工作树变化会自动同步；多仓库可在上下文区切换。顶部数量按文件 URI 去重，避免重复计算部分暂存的文件。
 - **History**：恢复已有会话并回到 Chat；输入区的加号新建会话。草稿、选中标签、仓库和最近 20 个会话（每个最多 100 条消息）通过 VS Code Webview state 保存，输入上限 4000 字符。
 - **更多操作**：打开扩展设置、会话历史或将当前会话作为未保存的 Markdown 文档打开，可自行保存导出。

@@ -1,9 +1,10 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
-import { MessagePrimitive, ThreadPrimitive } from '@assistant-ui/react';
+import { MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react';
 import { MarkdownTextPrimitive, useIsMarkdownCodeBlock } from '@assistant-ui/react-markdown';
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
 import { Icon } from './Icon';
+import { MessagePairAssistant, MessagePairUser } from './assistant-ui/elements/message-pair';
 
 interface ChatActions {
   openFile(uri: string): Promise<unknown>;
@@ -128,28 +129,61 @@ function MarkdownText() {
   );
 }
 
+function CopyResponse() {
+  const actions = useContext(ChatActionsContext)!;
+  const text = useAuiState((state) =>
+    state.message.content
+      .filter((part) => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n'),
+  );
+  const [copied, setCopied] = useState(false);
+  const [copying, setCopying] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
+  return (
+    <>
+      <button
+        type="button"
+        aria-label={copied ? '已复制回复' : '复制回复'}
+        title={copied ? '已复制' : '复制回复'}
+        disabled={!text || copying}
+        className="flex size-7 items-center justify-center rounded-full text-muted transition-colors hover:bg-hover hover:text-foreground motion-reduce:transition-none"
+        onClick={() => {
+          setCopied(false);
+          setCopying(true);
+          void actions
+            .copy(text)
+            .then(() => setCopied(true))
+            .catch(() => {})
+            .finally(() => setCopying(false));
+        }}
+      >
+        <Icon name={copied ? 'check' : 'copy'} className="size-3.5" />
+      </button>
+      <span className="sr-only" role="status">
+        {copied ? '回复已复制' : ''}
+      </span>
+    </>
+  );
+}
+
 function AssistantMessage() {
   return (
-    <MessagePrimitive.Root className="mb-5 min-w-0">
-      <div className="mb-1.5 flex items-center gap-1.5 text-[0.75rem] font-medium text-muted">
-        <Icon name="review" className="size-3.5 text-link" />
-        Review
-      </div>
-      <div className="min-w-0 rounded-md rounded-tl-none border border-widget bg-agent p-3">
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
-      </div>
-    </MessagePrimitive.Root>
+    <MessagePairAssistant actions={<CopyResponse />}>
+      <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+    </MessagePairAssistant>
   );
 }
 
 function UserMessage() {
   return (
-    <MessagePrimitive.Root className="mb-5 ml-5 min-w-0">
-      <p className="mb-1.5 text-right text-[0.75rem] font-medium text-muted">You</p>
-      <div className="min-w-0 rounded-md rounded-tr-none border border-widget bg-user p-3 text-user-foreground">
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
-      </div>
-    </MessagePrimitive.Root>
+    <MessagePairUser>
+      <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+    </MessagePairUser>
   );
 }
 
