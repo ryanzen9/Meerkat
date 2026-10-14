@@ -42,6 +42,10 @@ function isSession(value: unknown): value is ChatSession {
     typeof value.updatedAt === 'string' &&
     Number.isFinite(Date.parse(value.updatedAt)) &&
     typeof value.draft === 'string' &&
+    (value.bridgeSessionId === undefined ||
+      (typeof value.bridgeSessionId === 'string' &&
+        /^[\w-]{1,128}$/.test(value.bridgeSessionId))) &&
+    (value.model === undefined || (typeof value.model === 'string' && value.model.length <= 128)) &&
     Array.isArray(value.messages) &&
     value.messages.every(isChatMessage) &&
     new Set(value.messages.map(({ id }) => id)).size === value.messages.length

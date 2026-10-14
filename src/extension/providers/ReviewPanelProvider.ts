@@ -6,12 +6,15 @@ import type { SettingsService } from '../services/SettingsService';
 import type { StateService } from '../services/StateService';
 import type { GitService } from '../services/GitService';
 import { createWebviewHtml } from '../webview/html';
+import { WebviewBridgeProxy } from '../bridge/transport/webviewProxy';
+import type { BridgeService } from '../bridge/service';
 
 interface PanelServices {
   workspace: Pick<WorkspaceService, 'read'>;
   settings: Pick<SettingsService, 'read'>;
   state: Pick<StateService, 'read' | 'incrementMessageCount'>;
   git: Pick<GitService, 'read'>;
+  bridge?: Pick<BridgeService, 'request'>;
 }
 
 export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -19,6 +22,7 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
   private view: vscode.WebviewView | undefined;
   private ready = false;
   private listeners: vscode.Disposable[] = [];
+  private bridgeProxy: WebviewBridgeProxy | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -29,6 +33,11 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
   resolveWebviewView(view: vscode.WebviewView): void {
     this.dispose();
     this.view = view;
+    if (this.services.bridge)
+      this.bridgeProxy = new WebviewBridgeProxy(
+        (path, method, body, signal) => this.services.bridge!.request(path, method, body, signal),
+        (message) => this.post(view, message),
+      );
     const resourceRoot = vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview');
     view.webview.options = { enableScripts: true, localResourceRoots: [resourceRoot] };
     this.listeners.push(
@@ -62,6 +71,7 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
   reload(): void {
     if (!this.view) return;
     this.ready = false;
+    this.bridgeProxy?.dispose();
     this.view.webview.html = this.html(this.view.webview);
   }
 
@@ -80,6 +90,15 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
   ): Promise<void> {
     try {
       switch (message.type) {
+        case 'bridge/request':
+          if (this.bridgeProxy) await this.bridgeProxy.send(message);
+          break;
+        case 'bridge/ack':
+          this.bridgeProxy?.ack(message.requestId);
+          break;
+        case 'bridge/cancel':
+          this.bridgeProxy?.cancel(message.requestId);
+          break;
         case 'webview/ready':
           this.ready = true;
           await this.sendSnapshot(view);
@@ -185,6 +204,8 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
   }
 
   dispose(): void {
+    this.bridgeProxy?.dispose();
+    this.bridgeProxy = undefined;
     this.view = undefined;
     this.ready = false;
     this.listeners.splice(0).forEach((listener) => listener.dispose());

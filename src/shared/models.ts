@@ -83,4 +83,6 @@ export interface ChatSession {
   updatedAt: string;
   draft: string;
   messages: ChatMessage[];
+  bridgeSessionId?: string;
+  model?: string;
 }

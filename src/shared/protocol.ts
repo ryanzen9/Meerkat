@@ -7,12 +7,24 @@ export type WebviewToExtensionMessage =
   | { type: 'code/open'; requestId: string; code: string; language: string }
   | { type: 'clipboard/write'; requestId: string; text: string }
   | { type: 'settings/open'; requestId: string }
+  | {
+      type: 'bridge/request';
+      requestId: string;
+      path: string;
+      method: 'GET' | 'POST' | 'DELETE';
+      body?: string;
+    }
+  | { type: 'bridge/cancel' | 'bridge/ack'; requestId: string }
   | { type: 'demo/hello'; requestId: string; name: string };
 
 export type ExtensionToWebviewMessage =
   | { type: 'host/snapshot'; snapshot: PanelSnapshot; requestId?: string }
   | { type: 'host/hello'; requestId: string; message: string; messageCount: number }
   | { type: 'host/action'; requestId: string }
+  | { type: 'host/bridge-head'; requestId: string; status: number; headers: Record<string, string> }
+  | { type: 'host/bridge-chunk'; requestId: string; text: string }
+  | { type: 'host/bridge-end'; requestId: string }
+  | { type: 'host/bridge-error'; requestId: string; message: string }
   | { type: 'host/error'; message: string; requestId?: string };
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -34,7 +46,20 @@ export function isWebviewMessage(value: unknown): value is WebviewToExtensionMes
       return true;
     case 'workspace/refresh':
     case 'settings/open':
+    case 'bridge/cancel':
+    case 'bridge/ack':
       return isRequestId(value.requestId);
+    case 'bridge/request':
+      return (
+        isRequestId(value.requestId) &&
+        typeof value.path === 'string' &&
+        /^\/v1\/[\w/-]{1,256}$/.test(value.path) &&
+        ['GET', 'POST', 'DELETE'].includes(String(value.method)) &&
+        (value.body === undefined ||
+          (typeof value.body === 'string' &&
+            value.body.length <= 500000 &&
+            value.method === 'POST'))
+      );
     case 'file/open':
       return (
         isRequestId(value.requestId) &&
@@ -137,7 +162,33 @@ export function isExtensionMessage(value: unknown): value is ExtensionToWebviewM
         isCount(value.messageCount)
       );
     case 'host/action':
+    case 'host/bridge-end':
       return isRequestId(value.requestId);
+    case 'host/bridge-head':
+      return (
+        isRequestId(value.requestId) &&
+        Number.isInteger(value.status) &&
+        Number(value.status) >= 200 &&
+        Number(value.status) <= 599 &&
+        isRecord(value.headers) &&
+        Object.keys(value.headers).length <= 4 &&
+        Object.entries(value.headers).every(
+          ([key, header]) =>
+            ['content-type', 'x-vercel-ai-ui-message-stream'].includes(key) &&
+            typeof header === 'string' &&
+            header.length <= 200,
+        )
+      );
+    case 'host/bridge-chunk':
+      return (
+        isRequestId(value.requestId) && typeof value.text === 'string' && value.text.length <= 32768
+      );
+    case 'host/bridge-error':
+      return (
+        isRequestId(value.requestId) &&
+        typeof value.message === 'string' &&
+        value.message.length <= 1000
+      );
     case 'host/error':
       return (
         typeof value.message === 'string' &&

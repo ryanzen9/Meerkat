@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
 import { MessagePrimitive, ThreadPrimitive } from '@assistant-ui/react';
+import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import { MarkdownTextPrimitive, useIsMarkdownCodeBlock } from '@assistant-ui/react-markdown';
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
 import { Icon } from './Icon';
@@ -136,9 +137,29 @@ function AssistantMessage() {
         Review
       </div>
       <div className="min-w-0 rounded-md rounded-tl-none border border-widget bg-agent p-3">
-        <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
+        <MessagePrimitive.Parts
+          components={{ Text: MarkdownText, tools: { Fallback: ToolCall } }}
+        />
       </div>
     </MessagePrimitive.Root>
+  );
+}
+
+function ToolCall({ toolName, argsText, result, status }: ToolCallMessagePartProps) {
+  return (
+    <details className="my-2 rounded-sm border border-widget p-2 text-[0.8rem]">
+      <summary className="cursor-pointer text-muted">
+        {toolName} · {status.type === 'running' ? '运行中' : '已结束'}
+      </summary>
+      <pre className="mt-2 max-h-40 overflow-auto wrap-anywhere whitespace-pre-wrap">
+        {argsText}
+      </pre>
+      {result !== undefined && (
+        <pre className="mt-2 max-h-40 overflow-auto wrap-anywhere whitespace-pre-wrap">
+          {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
+        </pre>
+      )}
+    </details>
   );
 }
 
@@ -153,7 +174,15 @@ function UserMessage() {
   );
 }
 
-export function AgentChat({ empty, onFiles }: { empty: boolean; onFiles(): void }) {
+export function AgentChat({
+  empty,
+  onFiles,
+  authenticated,
+}: {
+  empty: boolean;
+  onFiles(): void;
+  authenticated: boolean;
+}) {
   return (
     <ThreadPrimitive.Viewport
       className="h-full min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain p-3"
@@ -179,7 +208,11 @@ export function AgentChat({ empty, onFiles }: { empty: boolean; onFiles(): void 
             查看文件变更
             <Icon name="chevron" className="size-3" />
           </button>
-          <p className="mt-5 text-[0.8rem] text-muted">AI 模型尚未配置</p>
+          <p className="mt-5 text-[0.8rem] text-muted">
+            {authenticated
+              ? 'ChatGPT 已连接。仅发送你输入的内容。'
+              : 'Continue with ChatGPT 后开始对话。'}
+          </p>
         </div>
       )}
       <ThreadPrimitive.Messages components={{ AssistantMessage, UserMessage }} />
