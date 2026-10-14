@@ -2,6 +2,7 @@
 !package.json
 !README.md
 !LICENSE
+!THIRD_PARTY_NOTICES.md
 !CHANGELOG.md
 !dist/extension/**/*.cjs
 !dist/webview/**/!(*.map)
