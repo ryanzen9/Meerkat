@@ -26,6 +26,7 @@ interface GitRepository {
 }
 
 export interface GitApi {
+  readonly git?: { readonly path: string };
   readonly repositories: readonly GitRepository[];
   readonly onDidOpenRepository: vscode.Event<GitRepository>;
   readonly onDidCloseRepository: vscode.Event<GitRepository>;

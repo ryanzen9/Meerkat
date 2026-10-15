@@ -5,6 +5,7 @@ import type { ProviderRegistry } from '../providers/registry';
 import { SessionStore } from '../sessions/store';
 import type { ReasoningEffort } from '../../../shared/agentModels';
 import { streamReviewAgent } from './reviewAgent';
+import type { ReviewContext } from '../tools/reviewContext';
 
 export type RunStatus = 'running' | 'completed' | 'cancelled' | 'failed';
 interface Run {
@@ -21,9 +22,11 @@ export class BridgeRuntime {
   readonly sessions = new SessionStore();
   private readonly runs = new Map<string, Run>();
   private closed = false;
+  private readonly reviewContexts = new Map<string, ReviewContext>();
   constructor(
     readonly registry: ProviderRegistry,
     private readonly timeoutMs = 120000,
+    private readonly createReviewContext?: () => ReviewContext,
   ) {}
 
   start(
@@ -34,6 +37,9 @@ export class BridgeRuntime {
   ): { runId: string; stream: ReadableStream<UIMessageChunk> } {
     if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
     const session = this.sessions.get(sessionId);
+    if (!this.reviewContexts.has(sessionId) && this.createReviewContext)
+      this.reviewContexts.set(sessionId, this.createReviewContext());
+    const reviewContext = this.reviewContexts.get(sessionId);
     if ([...this.runs.values()].some((r) => r.sessionId === sessionId && !r.settled))
       throw new BridgeError('session_busy', 'A run is already active in this session.', 409);
     const controller = new AbortController();
@@ -120,9 +126,14 @@ export class BridgeRuntime {
             return;
           }
           combined.throwIfAborted();
-          opening ??= streamReviewAgent(provider, session, text, combined, reasoningEffort).then(
-            (source) => source.getReader(),
-          );
+          opening ??= streamReviewAgent(
+            provider,
+            session,
+            text,
+            combined,
+            reasoningEffort,
+            reviewContext,
+          ).then((source) => source.getReader());
           reader ??= await opening;
           const next = await reader.read();
           if (terminal) return;
@@ -180,6 +191,8 @@ export class BridgeRuntime {
       await active.ended;
     }
     this.sessions.delete(id);
+    this.reviewContexts.get(id)?.dispose();
+    this.reviewContexts.delete(id);
   }
   async dispose(): Promise<void> {
     this.closed = true;

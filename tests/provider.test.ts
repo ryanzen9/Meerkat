@@ -4,9 +4,21 @@ import type { ExtensionToWebviewMessage } from '../src/shared/protocol';
 
 const nativeCalls: { action: string; value: unknown }[] = [];
 let gitExtension: unknown;
+let activeEditor: vscode.TextEditor | undefined;
+const editorDocuments: vscode.TextDocument[] = [];
+let foundFiles: vscode.Uri[] = [];
+let editorDiagnostics: vscode.Diagnostic[] = [];
+
+const localUri = (path: string) => ({
+  scheme: 'file',
+  path,
+  fsPath: path,
+  toString: () => `file://${path}`,
+});
 
 mock.module('vscode', () => ({
   Uri: {
+    file: localUri,
     parse: (value: string) => {
       const url = new URL(value);
       return { scheme: url.protocol.slice(0, -1), path: url.pathname, toString: () => value };
@@ -17,6 +29,12 @@ mock.module('vscode', () => ({
   },
   workspace: {
     isTrusted: true,
+    workspaceFolders: [{ name: 'repo', uri: localUri('/workspace/repo') }],
+    textDocuments: editorDocuments,
+    findFiles: async (...args: unknown[]) => {
+      nativeCalls.push({ action: 'findFiles', value: args });
+      return foundFiles;
+    },
     getWorkspaceFolder: (uri: { path: string }) =>
       uri.path.startsWith('/workspace/') ? {} : undefined,
     openTextDocument: async (value: unknown) => {
@@ -25,6 +43,9 @@ mock.module('vscode', () => ({
     },
   },
   window: {
+    get activeTextEditor() {
+      return activeEditor;
+    },
     showTextDocument: async (value: unknown) => {
       nativeCalls.push({ action: 'editor', value });
     },
@@ -42,6 +63,20 @@ mock.module('vscode', () => ({
     },
   },
   extensions: { getExtension: () => gitExtension },
+  languages: { getDiagnostics: () => editorDiagnostics },
+  RelativePattern: class {
+    constructor(
+      readonly base: string,
+      readonly pattern: string,
+    ) {}
+  },
+  CancellationTokenSource: class {
+    token = { isCancellationRequested: false };
+    cancel() {
+      this.token.isCancellationRequested = true;
+    }
+    dispose() {}
+  },
   EventEmitter: class {
     private signal = signal<void>();
     event = this.signal.event;
@@ -265,4 +300,83 @@ test('Git snapshots group real changes, update listeners and dispose them', asyn
   listener.dispose();
   expect(changed.size() + opened.size() + closed.size()).toBe(0);
   gitExtension = undefined;
+});
+
+test('VS Code review adapter reads editor buffers, converts coordinates and forwards native glob and diagnostics APIs', async () => {
+  const { VSCodeReviewWorkspace } =
+    await import('../src/extension/bridge/tools/vscodeReviewWorkspace');
+  const document = {
+    uri: localUri('/workspace/repo/file.ts'),
+    isDirty: true,
+    languageId: 'typescript',
+    getText: () => 'unsaved buffer',
+  } as unknown as vscode.TextDocument;
+  activeEditor = {
+    document,
+    selection: { start: { line: 1, character: 2 }, end: { line: 3, character: 4 } },
+  } as vscode.TextEditor;
+  editorDocuments.push(document, {
+    ...document,
+    uri: { scheme: 'untitled' },
+  } as vscode.TextDocument);
+  gitExtension = {
+    isActive: true,
+    exports: {
+      enabled: true,
+      getAPI: () => ({
+        git: { path: '/custom/git' },
+        repositories: [{ rootUri: localUri('/workspace/repo') }],
+      }),
+    },
+  };
+  foundFiles = [localUri('/workspace/repo/file.ts'), localUri('/outside/file.ts')] as vscode.Uri[];
+  editorDiagnostics = [0, 1, 2, 3].map((severity) => ({
+    severity,
+    message: 'diagnostic',
+    source: 'typescript',
+    code: severity === 0 ? { value: 2322, target: localUri('/docs') } : 'test-code',
+    range: { start: { line: 1, character: 2 }, end: { line: 1, character: 5 } },
+  })) as vscode.Diagnostic[];
+  const workspace = new VSCodeReviewWorkspace(output);
+  try {
+    const state = await workspace.getState();
+    expect(workspace.gitPath).toBe('/custom/git');
+    expect(state.repositories).toEqual(['/workspace/repo']);
+    expect(state.activeFile?.selection).toEqual({
+      start: { line: 2, column: 3 },
+      end: { line: 4, column: 5 },
+    });
+    expect(state.dirtyDocuments).toEqual([
+      { path: '/workspace/repo/file.ts', text: 'unsaved buffer' },
+    ]);
+    expect(await workspace.findFiles('/workspace/repo', '**/*.ts', 10)).toEqual(['file.ts']);
+    const args = nativeCalls.filter((call) => call.action === 'findFiles').at(-1)!
+      .value as unknown[];
+    expect(args[0]).toMatchObject({ base: '/workspace/repo', pattern: '**/*.ts' });
+    expect(args[2]).toBe(10);
+    const diagnostics = workspace.getDiagnostics(['/workspace/repo/file.ts']);
+    expect(diagnostics.map((item) => item.severity)).toEqual([
+      'error',
+      'warning',
+      'information',
+      'hint',
+    ]);
+    expect(diagnostics[0]).toMatchObject({
+      source: 'typescript',
+      code: 2322,
+      range: { start: { line: 2, column: 3 }, end: { line: 2, column: 6 } },
+    });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      workspace.findFiles('/workspace/repo', '**/*', 10, controller.signal),
+    ).rejects.toBeDefined();
+  } finally {
+    workspace.dispose();
+    activeEditor = undefined;
+    editorDocuments.length = 0;
+    foundFiles = [];
+    editorDiagnostics = [];
+    gitExtension = undefined;
+  }
 });

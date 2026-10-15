@@ -9,11 +9,14 @@ import { BridgeRuntime } from './runtime/bridgeRuntime';
 import { createBridgeApi } from './server/api';
 import { BridgeHttpServer } from './server/httpServer';
 import { BridgeError } from './errors';
+import { ReviewContext } from './tools/reviewContext';
+import { VSCodeReviewWorkspace } from './tools/vscodeReviewWorkspace';
 
 export class BridgeService implements vscode.Disposable {
   private startPromise: Promise<void> | undefined;
   private server: BridgeHttpServer | undefined;
   private runtime: BridgeRuntime | undefined;
+  private reviewWorkspace: VSCodeReviewWorkspace | undefined;
   private disposed = false;
   private closing: Promise<void> | undefined;
   private connectionFile: string | undefined;
@@ -43,6 +46,8 @@ export class BridgeService implements vscode.Disposable {
       this.server = undefined;
       await this.runtime?.dispose();
       this.runtime = undefined;
+      this.reviewWorkspace?.dispose();
+      this.reviewWorkspace = undefined;
       this.startPromise = undefined;
       throw error;
     });
@@ -56,7 +61,12 @@ export class BridgeService implements vscode.Disposable {
       exclusive: fileMutex(join(this.context.globalStorageUri.fsPath, 'oauth.lock')),
     });
     registry.register(() => new OpenAIChatGPTProvider(auth));
-    this.runtime = new BridgeRuntime(registry);
+    this.reviewWorkspace = new VSCodeReviewWorkspace(this.output);
+    this.runtime = new BridgeRuntime(
+      registry,
+      120000,
+      () => new ReviewContext(this.reviewWorkspace!),
+    );
     await registry.initialize();
     let baseUrl = '';
     this.api = createBridgeApi({
@@ -107,6 +117,7 @@ export class BridgeService implements vscode.Disposable {
       await this.startPromise?.catch(() => undefined);
       await this.server?.close();
       await this.runtime?.dispose();
+      this.reviewWorkspace?.dispose();
       if (this.connectionFile) await rm(this.connectionFile, { force: true });
     })();
     await this.closing;

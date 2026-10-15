@@ -1,5 +1,7 @@
 # Agent Bridge
 
+仓库审查已接入六个只读工具，调用参数、快照语义与限制见 [仓库审查工具](review-tools.md)。
+
 Bridge 运行在 VS Code Node.js Extension Host。首版实现 ChatGPT OAuth、Vercel AI SDK ToolLoopAgent、本地多轮会话、Function Tool、官方 AI SDK UI Message Stream 和受保护的 HTTP API。前端使用 `@assistant-ui/ai-sdk` 的 `useAISDKRuntime(useChat(...))`，适配已有会话列表；`AssistantChatTransport` 使用 Host 消息代理作为 Fetch 实现。OAuth 凭据与 loopback 服务访问凭据均不进入 webview，现有 `connect-src 'none'` CSP 保持生效。
 
 ## 安装与首次运行
