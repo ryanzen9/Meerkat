@@ -66,7 +66,6 @@ export function activate(context: vscode.ExtensionContext): void {
     provider,
     vscode.window.registerWebviewViewProvider(ReviewPanelProvider.viewId, provider),
     vscode.commands.registerCommand('reviewBot.showPanel', async () => {
-      await vscode.commands.executeCommand('workbench.view.scm');
       await vscode.commands.executeCommand(`${ReviewPanelProvider.viewId}.focus`);
     }),
     vscode.commands.registerCommand('reviewBot.refresh', () => provider.refresh()),

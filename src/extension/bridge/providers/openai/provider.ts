@@ -4,25 +4,25 @@ import {
   Runner,
   setSensitiveDataLoggingEnabled,
   type RunStreamEvent,
-} from "@openai/agents";
-import { createAiSdkUiMessageStream } from "@openai/agents-extensions/ai-sdk-ui";
-import { randomUUID } from "node:crypto";
-import OpenAI from "openai";
-import type { ReasoningEffort } from "../../../../shared/agentModels";
-import { isRecord } from "../../../../shared/protocol";
-import { CHATGPT_RESOURCE, ChatGPTAuth } from "../../auth/chatgpt";
-import { BridgeError } from "../../errors";
-import type { HttpFetch } from "../../http";
-import { LocalAgentSession } from "../../sessions/localAgentSession";
-import { reviewTools } from "../../tools/reviewTools";
-import type { AgentProvider, ProviderSession } from "../types";
-import { planFetch } from "./compatibility";
-import { parseModelCatalog } from "./models";
+} from '@openai/agents';
+import { createAiSdkUiMessageStream } from '@openai/agents-extensions/ai-sdk-ui';
+import { randomUUID } from 'node:crypto';
+import OpenAI from 'openai';
+import type { ReasoningEffort } from '../../../../shared/agentModels';
+import { isRecord } from '../../../../shared/protocol';
+import { CHATGPT_RESOURCE, ChatGPTAuth } from '../../auth/chatgpt';
+import { BridgeError } from '../../errors';
+import type { HttpFetch } from '../../http';
+import { LocalAgentSession } from '../../sessions/localAgentSession';
+import { reviewTools } from '../../tools/reviewTools';
+import type { AgentProvider, ProviderSession } from '../types';
+import { planFetch } from './compatibility';
+import { parseModelCatalog } from './models';
 
 export class OpenAIAgentsProvider implements AgentProvider {
   readonly info = {
-    id: "openai-agents",
-    name: "OpenAI Agents · ChatGPT",
+    id: 'openai-agents',
+    name: 'OpenAI Agents · ChatGPT',
     capabilities: {
       streaming: true,
       functionTools: true,
@@ -54,11 +54,7 @@ export class OpenAIAgentsProvider implements AgentProvider {
   private async activeAccount() {
     const status = await this.auth.status();
     if (!status.activeAccountId)
-      throw new BridgeError(
-        "sign_in_required",
-        "Continue with ChatGPT first.",
-        401,
-      );
+      throw new BridgeError('sign_in_required', 'Continue with ChatGPT first.', 401);
     return this.auth.credential(status.activeAccountId);
   }
   async listModels(signal: AbortSignal) {
@@ -66,35 +62,28 @@ export class OpenAIAgentsProvider implements AgentProvider {
     const response = await this.http(`${CHATGPT_RESOURCE}/models`, {
       headers: { Authorization: `Bearer ${account.tokens.accessToken}` },
       signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
-      redirect: "error",
+      redirect: 'error',
     });
     if (response.status === 401) {
       await this.auth.invalidate(account.id);
       throw new BridgeError(
-        "sign_in_required",
-        "ChatGPT authorization is invalid. Sign in again.",
+        'sign_in_required',
+        'ChatGPT authorization is invalid. Sign in again.',
         401,
       );
     }
     if (!response.ok)
-      throw new BridgeError(
-        "models_unavailable",
-        "ChatGPT model catalog is unavailable.",
-        502,
-      );
+      throw new BridgeError('models_unavailable', 'ChatGPT model catalog is unavailable.', 502);
     return parseModelCatalog(await response.json());
   }
-  async createSession(
-    model: string,
-    signal: AbortSignal,
-  ): Promise<ProviderSession> {
+  async createSession(model: string, signal: AbortSignal): Promise<ProviderSession> {
     const account = await this.activeAccount();
     const models = await this.listModels(signal);
     const selected = models.find((m) => m.id === model);
     if (!selected)
       throw new BridgeError(
-        "model_unavailable",
-        "Model is unavailable to this ChatGPT account.",
+        'model_unavailable',
+        'Model is unavailable to this ChatGPT account.',
         422,
       );
     return {
@@ -114,20 +103,17 @@ export class OpenAIAgentsProvider implements AgentProvider {
     signal: AbortSignal,
     reasoningEffort?: ReasoningEffort,
   ) {
-    if (!(session.state instanceof LocalAgentSession))
-      throw new Error("Invalid OpenAI session");
+    if (!(session.state instanceof LocalAgentSession)) throw new Error('Invalid OpenAI session');
     const account = await this.auth.credential(session.accountId);
     signal.throwIfAborted();
     const effort = reasoningEffort ?? session.defaultReasoningEffort;
     if (
       effort !== undefined &&
-      !session.supportedReasoningEfforts?.some(
-        (option) => option.reasoningEffort === effort,
-      )
+      !session.supportedReasoningEfforts?.some((option) => option.reasoningEffort === effort)
     )
       throw new BridgeError(
-        "reasoning_effort_unavailable",
-        "The selected reasoning effort is unavailable for this model.",
+        'reasoning_effort_unavailable',
+        'The selected reasoning effort is unavailable for this model.',
         422,
       );
     const original = session.state;
@@ -137,7 +123,7 @@ export class OpenAIAgentsProvider implements AgentProvider {
       baseURL: CHATGPT_RESOURCE,
       maxRetries: 0,
       timeout: 120000,
-      logLevel: "off",
+      logLevel: 'off',
       fetch: planFetch(this.http, () => this.auth.invalidate(account.id)),
     });
     const provider = new OpenAIProvider({
@@ -150,14 +136,14 @@ export class OpenAIAgentsProvider implements AgentProvider {
       traceIncludeSensitiveData: false,
     });
     const agent = new Agent({
-      name: "Review Bot",
+      name: 'Review Bot',
       model: session.model,
       instructions:
-        "Help the user review code. Explain concrete findings. You can inspect only source text supplied by the user. Never claim to have read workspace files.",
+        'Help the user review code. Explain concrete findings. You can inspect only source text supplied by the user. Never claim to have read workspace files.',
       tools: reviewTools(),
       modelSettings: {
         store: false,
-        providerData: { include: ["reasoning.encrypted_content"] },
+        providerData: { include: ['reasoning.encrypted_content'] },
         ...(effort !== undefined ? { reasoning: { effort } } : {}),
       },
     });
@@ -176,28 +162,23 @@ export class OpenAIAgentsProvider implements AgentProvider {
       try {
         for await (const event of result) {
           signal.throwIfAborted();
-          if (event.type === "raw_model_stream_event") {
-            if (event.data.type === "response_started") started++;
-            if (event.data.type === "response_done") completed++;
-            if (event.data.type === "model" && isRecord(event.data.event)) {
+          if (event.type === 'raw_model_stream_event') {
+            if (event.data.type === 'response_started') started++;
+            if (event.data.type === 'response_done') completed++;
+            if (event.data.type === 'model' && isRecord(event.data.event)) {
               const raw = event.data.event;
-              const response = isRecord(raw.response)
-                ? raw.response
-                : undefined;
-              const error =
-                response && isRecord(response.error)
-                  ? response.error
-                  : undefined;
-              if (error?.code === "subscription_sharing_usage_limit_exceeded")
+              const response = isRecord(raw.response) ? raw.response : undefined;
+              const error = response && isRecord(response.error) ? response.error : undefined;
+              if (error?.code === 'subscription_sharing_usage_limit_exceeded')
                 throw new BridgeError(
-                  "chatgpt_usage_limit",
-                  "ChatGPT plan usage limit reached. Retry after your allowance resets.",
+                  'chatgpt_usage_limit',
+                  'ChatGPT plan usage limit reached. Retry after your allowance resets.',
                   429,
                 );
-              if (error?.code === "subscription_sharing_usage_unavailable")
+              if (error?.code === 'subscription_sharing_usage_unavailable')
                 throw new BridgeError(
-                  "chatgpt_usage_unavailable",
-                  "ChatGPT usage availability is temporarily unavailable. Please retry later.",
+                  'chatgpt_usage_unavailable',
+                  'ChatGPT usage availability is temporarily unavailable. Please retry later.',
                   503,
                 );
             }
@@ -208,8 +189,8 @@ export class OpenAIAgentsProvider implements AgentProvider {
         signal.throwIfAborted();
         if (!started || completed !== started)
           throw new BridgeError(
-            "inference_incomplete",
-            "Inference stream ended before response.completed.",
+            'inference_incomplete',
+            'Inference stream ended before response.completed.',
             502,
           );
         await original.commit(staged);
@@ -217,19 +198,19 @@ export class OpenAIAgentsProvider implements AgentProvider {
         if (error instanceof BridgeError) throw error;
         if (error instanceof OpenAI.APIError && error.status === 401)
           throw new BridgeError(
-            "sign_in_required",
-            "ChatGPT authorization is invalid. Sign in again.",
+            'sign_in_required',
+            'ChatGPT authorization is invalid. Sign in again.',
             401,
           );
         if (error instanceof OpenAI.APIError && error.status === 429)
           throw new BridgeError(
-            "provider_rate_limited",
-            "OpenAI rate limit reached. Please retry later.",
+            'provider_rate_limited',
+            'OpenAI rate limit reached. Please retry later.',
             429,
           );
         throw new BridgeError(
-          "inference_failed",
-          "OpenAI inference failed or ended incompletely. Please retry.",
+          'inference_failed',
+          'OpenAI inference failed or ended incompletely. Please retry.',
           502,
         );
       } finally {
@@ -239,8 +220,7 @@ export class OpenAIAgentsProvider implements AgentProvider {
     return createAiSdkUiMessageStream(checkedEvents());
   }
   async deleteSession(session: ProviderSession): Promise<void> {
-    if (session.state instanceof LocalAgentSession)
-      await session.state.clearSession();
+    if (session.state instanceof LocalAgentSession) await session.state.clearSession();
   }
   async dispose(): Promise<void> {}
 }

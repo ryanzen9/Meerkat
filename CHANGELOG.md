@@ -2,6 +2,7 @@
 
 ## 0.1.0
 
+- Add a dedicated Review Bot Activity Bar entry and sidebar.
 - Migrate Webview styles to Tailwind CSS with native VS Code theme tokens.
 - Add Oxlint, Oxfmt, Tailwind class sorting, and editor/CLI quality checks.
 - Add a collapsible React Webview View to the native Source Control container.

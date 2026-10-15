@@ -1,6 +1,6 @@
-# Review Bot · VS Code SCM Webview
+# Review Bot · VS Code Sidebar
 
-基于 **Bun + Vite + React + TypeScript** 的可运行 VS Code 扩展。通过官方 `contributes.views.scm` 与 `registerWebviewViewProvider`，在原生 Source Control 中添加 **Review Bot** 可折叠视图，与 Changes、Graph 同属于 SCM 容器。原生 Git 提交、暂存、分支与 Graph 功能继续由 VS Code 提供。
+基于 **Bun + Vite + React + TypeScript** 的可运行 VS Code 扩展。通过官方 `contributes.viewsContainers.activitybar`、`contributes.views` 与 `registerWebviewViewProvider`，在活动栏添加 **Review Bot** 图标，点击后打开独立侧栏，提供代码审查、聊天和历史记录。原生 Git 提交、暂存、分支与 Graph 功能继续由 VS Code 提供。
 
 ## 快速开始
 
@@ -12,11 +12,11 @@ bun run build
 code .
 ```
 
-在 VS Code 中按 **F5**，选择 `Run Review Bot Extension`。调试窗口打开后进入 **Source Control**，展开 **Review Bot**。也可以从命令面板执行 **Review Bot: Open Panel**。启动前的 `dev` 任务会等待 Extension 与 Webview 首轮构建完成。
+在 VS Code 中按 **F5**，选择 `Run Review Bot Extension`。调试窗口打开后点击活动栏的 **Review Bot** 图标，打开插件侧栏。也可以从命令面板执行 **Review Bot: Open Panel**。启动前的 `dev` 任务会等待 Extension 与 Webview 首轮构建完成。
 
 调试窗口可通过 **File → Open Folder** 打开目标工作区。未打开文件夹时，面板会显示空工作区和 Git 状态。
 
-面板默认折叠，由 VS Code 提供标题栏和折叠行为。名称及是否有 Graph 取决于 VS Code 版本和语言；视图的确切排序、高度和位置由 VS Code 与用户保存的布局决定。如果隐藏或移动过视图，可以通过 Source Control 的视图菜单启用，或执行 `View: Reset View Locations`。
+面板在独立侧栏中默认展开，由 VS Code 提供标题栏和视图布局。活动栏图标、视图位置和大小可以由用户调整。如果升级前曾移动过 Review Bot，VS Code 可能保留旧布局；可执行 `View: Reset View Locations` 恢复默认位置。隐藏入口后也可通过命令面板执行 **Review Bot: Open Panel** 重新打开。
 
 ## 脚本
 
@@ -47,6 +47,7 @@ F5 结束后，开发任务可能继续监听；可通过 `Tasks: Terminate Task
 .
 ├── .vscode/                 # F5、构建任务
 ├── scripts/                 # Bun 开发监听编排、VSIX 打包、清理
+├── resources/               # 活动栏 SVG 图标
 ├── src/
 │   ├── extension/           # VS Code Node.js Extension Host
 │   │   ├── index.ts         # 激活与资源生命周期
@@ -151,12 +152,12 @@ bun run package
 code --install-extension artifacts/vscode-review-bot-0.1.0.vsix
 ```
 
-也可执行 VS Code 命令 **Extensions: Install from VSIX...**。打包会通过 `vscode:prepublish` 重新生成两个生产构建，仅包含 manifest、文档、许可证、Host 的 `.cjs` 文件和 Webview 的全部静态产物；排除源码、开发配置、source maps、监听锁和 `node_modules`。React 已打包，当前 Host 的 external 仅由 VS Code / Node 提供，因此保留 `--no-dependencies`。以后若增加需 external 的 npm 运行时依赖，必须同步调整依赖打包规则。开发构建生成两端 source maps，生产构建不生成。
+也可执行 VS Code 命令 **Extensions: Install from VSIX...**。打包会通过 `vscode:prepublish` 重新生成两个生产构建，仅包含 manifest、活动栏图标、文档、许可证、Host 的 `.cjs` 文件和 Webview 的全部静态产物；排除源码、开发配置、source maps、监听锁和 `node_modules`。React 已打包，当前 Host 的 external 仅由 VS Code / Node 提供，因此保留 `--no-dependencies`。以后若增加需 external 的 npm 运行时依赖，必须同步调整依赖打包规则。开发构建生成两端 source maps，生产构建不生成。
 
 ### 人工调试与安装验证
 
 1. 按 F5，确认 `dev` 任务完成两个首次构建后才启动 Extension Development Host；在源码入口设置断点，检查 Host source map。
-2. 展开 Source Control 中的 Review Bot，检查固定布局、Git 变更、刷新、聊天与历史；折叠再展开，确认草稿与会话保持，原生 Changes / Graph 继续可用。
+2. 点击活动栏的 Review Bot，确认打开独立侧栏，检查固定布局、Git 变更、刷新、聊天与历史；切换到其他活动栏入口后再返回，确认草稿与会话保持。执行 **Review Bot: Open Panel**，确认能重新打开并聚焦侧栏。
 3. 修改 React / CSS，等待 `[watch] ready` 后点击 **Reload Webview**；修改 Host 后重启调试会话。检查控制台没有资源 404、CSP 或模块加载错误。
 4. 切换深色、浅色及高对比主题，检查窄侧栏布局、输入框、按钮和焦点样式。
 5. 结束 `dev`，运行 `bun run package` 并安装 VSIX；关闭构建终端，在普通 VS Code 窗口重复上述功能检查。安装后无需 Bun 或 Vite；Agent Bridge 的 loopback HTTP 服务由扩展自身管理。
@@ -168,6 +169,7 @@ code --install-extension artifacts/vscode-review-bot-0.1.0.vsix
 ## 官方资料
 
 - [View contribution points](https://code.visualstudio.com/api/references/contribution-points#contributes.views)
+- [Activity Bar view containers](https://code.visualstudio.com/api/references/contribution-points#contributes.viewsContainers)
 - [Webview API、消息、资源、CSP 与持久化](https://code.visualstudio.com/api/extension-guides/webview)
 - [内置 Git 扩展公开 API 类型](https://github.com/microsoft/vscode/blob/main/extensions/git/src/api/git.d.ts)
 - [Vite Library Mode](https://vite.dev/guide/build#library-mode)

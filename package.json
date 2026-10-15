@@ -2,7 +2,7 @@
   "name": "vscode-review-bot",
   "displayName": "Review Bot",
   "version": "0.1.0",
-  "description": "A React webview alongside the native Changes and Graph views in Source Control.",
+  "description": "AI-powered code review and chat in a dedicated Review Bot sidebar.",
   "categories": [
     "Other",
     "SCM Providers"
@@ -84,15 +84,24 @@
     "vite": "8.3.4"
   },
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "reviewBot",
+          "title": "Review Bot",
+          "icon": "resources/review-bot.svg"
+        }
+      ]
+    },
     "views": {
-      "scm": [
+      "reviewBot": [
         {
           "type": "webview",
           "id": "reviewBot.panel",
           "name": "Review Bot",
           "contextualTitle": "Review Bot",
-          "icon": "$(comment-discussion)",
-          "visibility": "collapsed"
+          "icon": "resources/review-bot.svg",
+          "visibility": "visible"
         }
       ]
     },

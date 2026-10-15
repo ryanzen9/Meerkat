@@ -11,6 +11,7 @@ export async function createProjectFixture(): Promise<string> {
     [
       'src',
       'scripts',
+      'resources',
       'package.json',
       'vite.config.extension.ts',
       'vite.config.webview.ts',
