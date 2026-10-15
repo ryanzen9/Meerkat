@@ -2,6 +2,7 @@ import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react';
 import { createContext, useContext, useEffect, useEffectEvent, useMemo, useState } from 'react';
 import { Icon } from './Icon';
 import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
+import { OpenAILogo } from './assistant-ui/elements/logos';
 
 import { isReasoningEffort, type AgentModel, type ReasoningEffort } from '../../shared/agentModels';
 
@@ -38,13 +39,22 @@ export function ReviewModelSelector() {
     const available: ModelOption[] = models.map((item) => ({
       id: item.id,
       name: item.name,
+      icon: <OpenAILogo />,
       efforts: item.supportedReasoningEfforts.map((option) => ({
         id: option.reasoningEffort,
         name: EFFORT_LABELS[option.reasoningEffort],
       })),
     }));
     return model && !models.some(({ id }) => id === model)
-      ? [{ id: model, name: `${model}（当前账户不可用）`, disabled: true }, ...available]
+      ? [
+          {
+            id: model,
+            name: `${model}（当前账户不可用）`,
+            icon: <OpenAILogo />,
+            disabled: true,
+          },
+          ...available,
+        ]
       : available;
   }, [models, model]);
   return (
