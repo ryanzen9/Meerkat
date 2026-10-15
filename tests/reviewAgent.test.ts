@@ -7,8 +7,9 @@ import { ReviewContext } from '../src/extension/bridge/tools/reviewContext';
 import { validatePlanRequest } from '../src/extension/bridge/providers/openai/compatibility';
 import { signedInAuth, responseEvents, sse } from './bridgeFixture';
 import { reviewFixture } from './reviewFixture';
+import type { FileReference } from '../src/extension/bridge/tools/reviewWorkspace';
 
-test('all six registered workspace tools round-trip through the real SDK, provider, runtime and session history', async () => {
+test('all seven registered workspace tools round-trip through the real SDK, provider, runtime and session history', async () => {
   const f = await reviewFixture();
   await f.write('file.ts', 'one\ninserted\ntwo\nthree\n');
   const names = [
@@ -18,10 +19,13 @@ test('all six registered workspace tools round-trip through the real SDK, provid
     'read_file',
     'search_code',
     'get_diagnostics',
+    'cite_files',
   ];
   let calls = 0;
   let reviewId = '';
   let followup = false;
+  let citation: { referenceId: string; markdown: string } | undefined;
+  let fileCitation: { referenceId: string; markdown: string } | undefined;
   const registry = new ProviderRegistry();
   registry.register(
     () =>
@@ -34,6 +38,11 @@ test('all six registered workspace tools round-trip through the real SDK, provid
         validatePlanRequest(body);
         for (const name of names) expect(JSON.stringify(body.tools)).toContain(`"name":"${name}"`);
         const input = body.input as Record<string, unknown>[];
+        const instructions = JSON.stringify(input.filter((item) => item.role === 'developer'));
+        expect(instructions).toContain('call cite_files');
+        expect(instructions).toContain('Use each returned markdown verbatim');
+        expect(instructions).toContain('Use scope: file');
+        expect(instructions).toContain('Use scope: range');
         if (calls === 2) {
           const result = input.filter((item) => item.type === 'function_call_output').at(-1)!;
           reviewId = (JSON.parse(result.output as string) as { reviewId: string }).reviewId;
@@ -46,9 +55,32 @@ test('all six registered workspace tools round-trip through the real SDK, provid
           { reviewId, path: 'file.ts', version: 'new', startLine: 1, endLine: 20 },
           { query: 'inserted', glob: '**/*.ts', limit: 10 },
           { paths: ['file.ts'] },
+          {
+            reviewId,
+            references: [
+              { path: 'file.ts', version: 'new', startLine: 2, endLine: 3 },
+              { path: 'file.ts', version: 'new', scope: 'file' },
+              { path: 'file.ts', version: 'new', scope: 'range', startLine: 2, endLine: 3 },
+            ],
+          },
         ];
         const index = calls++;
-        if (index >= names.length && !followup) return sse(responseEvents('Review complete'));
+        if (index >= names.length && !followup) {
+          if (!citation) {
+            const result = input.filter((item) => item.type === 'function_call_output').at(-1)!;
+            const references = (
+              JSON.parse(result.output as string) as { references: FileReference[] }
+            ).references;
+            citation = references[0]!;
+            fileCitation = references[1]!;
+            expect(citation).toMatchObject({ scope: 'range', startLine: 2, endLine: 3 });
+            expect(fileCitation).toMatchObject({ scope: 'file', label: 'file.ts' });
+            expect(references[2]!.referenceId).toBe(citation.referenceId);
+          }
+          return sse(
+            responseEvents(`Review complete: ${fileCitation!.markdown} ${citation.markdown}`),
+          );
+        }
         const name = followup ? 'read_file' : names[index]!;
         const toolArguments = followup ? args[3] : args[index];
         followup = false;
@@ -84,10 +116,29 @@ test('all six registered workspace tools round-trip through the real SDK, provid
     const run = runtime.start(session.id, 'Review all local changes', signal);
     const output = await createUIMessageStreamResponse({ stream: run.stream }).text();
     expect(runtime.status(run.runId).status).toBe('completed');
-    expect(calls).toBe(7);
-    expect(output.match(/"type":"tool-output-available"/g)).toHaveLength(6);
+    expect(calls).toBe(8);
+    expect(output.match(/"type":"tool-output-available"/g)).toHaveLength(7);
     expect(output).toContain('Review complete');
     expect(output).toContain('inserted');
+    expect(output).toContain(citation!.markdown);
+    expect(output).toContain(fileCitation!.markdown);
+    expect(
+      (await runtime.readFileReference(session.id, fileCitation!.referenceId)).reference,
+    ).toMatchObject({ scope: 'file', path: 'file.ts' });
+    expect(await contexts[0]!.getFileReference(citation!.referenceId)).toMatchObject({
+      reviewId,
+      path: 'file.ts',
+      version: 'new',
+      startLine: 2,
+      endLine: 3,
+    });
+    expect((await runtime.readFileReference(session.id, citation!.referenceId)).content).toBe(
+      'one\ninserted\ntwo\nthree\n',
+    );
+    const otherSession = runtime.sessions.create(provider.id, session.provider);
+    await expect(
+      runtime.readFileReference(otherSession.id, citation!.referenceId),
+    ).rejects.toMatchObject({ code: 'reference_not_found' });
     const history = JSON.stringify(session.history.getMessages());
     for (const name of names) expect(history).toContain(name);
     expect(history).not.toContain('review_unavailable');
@@ -100,6 +151,12 @@ test('all six registered workspace tools round-trip through the real SDK, provid
     expect(secondOutput).not.toContain('changed after snapshot');
     expect(contexts).toHaveLength(1);
     await runtime.deleteSession(session.id);
+    await expect(
+      runtime.readFileReference(session.id, citation!.referenceId),
+    ).rejects.toMatchObject({ code: 'session_not_found' });
+    await expect(contexts[0]!.getFileReference(citation!.referenceId)).rejects.toMatchObject({
+      code: 'reference_not_found',
+    });
     await expect(
       contexts[0]!.readFile({
         reviewId,

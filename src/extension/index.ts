@@ -6,6 +6,7 @@ import { StateService } from './services/StateService';
 import { GitService } from './services/GitService';
 import { BridgeService } from './bridge/service';
 import { publicError } from './bridge/errors';
+import { ReferenceEditorService } from './services/ReferenceEditorService';
 
 let bridge: BridgeService | undefined;
 
@@ -13,6 +14,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Meerkat', { log: true });
   const git = new GitService(output);
   bridge = new BridgeService(context, output);
+  const referenceEditor = new ReferenceEditorService(bridge);
   const provider = new ReviewPanelProvider(
     context.extensionUri,
     {
@@ -21,6 +23,7 @@ export function activate(context: vscode.ExtensionContext): void {
       state: new StateService(context.workspaceState),
       git,
       bridge,
+      referenceEditor,
     },
     output,
   );
@@ -29,6 +32,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     git,
     bridge,
+    referenceEditor,
     vscode.commands.registerCommand('meerkat.chatgptSignIn', async () => {
       try {
         const response = await bridge!.request(

@@ -86,6 +86,17 @@ export function usePanel() {
   }, [request]);
 
   const openFile = useCallback((uri: string) => request({ type: 'file/open', uri }), [request]);
+  const openReference = useCallback(
+    (sessionId: string | undefined, referenceId: string) => {
+      if (!sessionId) {
+        const message = '此会话的代码引用已失效，请重新生成引用。';
+        dispatch({ type: 'host/error', message });
+        return Promise.reject(new Error(message));
+      }
+      return request({ type: 'reference/open', sessionId, referenceId });
+    },
+    [request],
+  );
   const openCode = useCallback(
     (code: string, language: string) => request({ type: 'code/open', code, language }),
     [request],
@@ -93,5 +104,5 @@ export function usePanel() {
   const copy = useCallback((text: string) => request({ type: 'clipboard/write', text }), [request]);
   const openSettings = useCallback(() => request({ type: 'settings/open' }), [request]);
 
-  return { ...state, refreshing, refresh, openFile, openCode, copy, openSettings };
+  return { ...state, refreshing, refresh, openFile, openReference, openCode, copy, openSettings };
 }

@@ -19,7 +19,15 @@ export function App() {
     repositories.find(({ rootUri }) => rootUri === chat.repositoryUri) ?? repositories[0];
   return (
     <AssistantRuntimeProvider runtime={chat.runtime}>
-      <ChatActionsContext.Provider value={panel}>
+      <ChatActionsContext.Provider
+        value={{
+          openFile: panel.openFile,
+          openReference: (referenceId) =>
+            panel.openReference(chat.session.bridgeSessionId, referenceId),
+          openCode: panel.openCode,
+          copy: panel.copy,
+        }}
+      >
         <div
           className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
           aria-label="Meerkat 面板"

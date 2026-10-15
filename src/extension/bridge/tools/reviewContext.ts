@@ -14,16 +14,21 @@ import {
 import type { ReviewSnapshot } from './reviewGit';
 import type {
   DiffHunk,
+  FileReference,
+  FileReferenceRange,
+  FileReferenceTarget,
   FileVersion,
   ReviewHostState,
   ReviewScope,
   ReviewToolContext,
   ReviewWorkspace,
+  WholeFileReference,
 } from './reviewWorkspace';
 
 const PAGE_CHARS = 24000;
 const MAX_SNAPSHOTS = 4;
 const SNAPSHOT_TTL = 15 * 60 * 1000;
+const MAX_FILE_REFERENCES = 1000;
 const CONFIG_GLOB =
   '**/{AGENTS.md,package.json,bun.lock,bunfig.toml,tsconfig*.json,jsconfig.json,pyproject.toml,Cargo.toml,go.mod,pom.xml,build.gradle*,CMakeLists.txt,*.sln,*.csproj,vite.config.*,vitest.config.*,eslint.config.*,biome.json,.eslintrc*,.vscode/settings.json}';
 
@@ -70,6 +75,7 @@ function pageHunks(patch: string, start: number, end: number) {
 
 export class ReviewContext implements ReviewToolContext {
   private readonly snapshots = new Map<string, ReviewSnapshot>();
+  private readonly fileReferences = new Map<string, Map<string, FileReference>>();
   constructor(private readonly workspace: ReviewWorkspace) {}
 
   private async state(signal?: AbortSignal): Promise<ReviewHostState> {
@@ -144,7 +150,7 @@ export class ReviewContext implements ReviewToolContext {
     signal?.throwIfAborted();
     this.prune();
     while (this.snapshots.size >= MAX_SNAPSHOTS)
-      this.snapshots.delete(this.snapshots.keys().next().value!);
+      this.deleteSnapshot(this.snapshots.keys().next().value!);
     this.snapshots.set(snapshot.id, snapshot);
     return {
       reviewId: snapshot.id,
@@ -160,8 +166,13 @@ export class ReviewContext implements ReviewToolContext {
 
   private prune() {
     for (const [id, snapshot] of this.snapshots) {
-      if (Date.now() - Date.parse(snapshot.createdAt) >= SNAPSHOT_TTL) this.snapshots.delete(id);
+      if (Date.now() - Date.parse(snapshot.createdAt) >= SNAPSHOT_TTL) this.deleteSnapshot(id);
     }
+  }
+
+  private deleteSnapshot(id: string) {
+    this.snapshots.delete(id);
+    this.fileReferences.delete(id);
   }
 
   private async snapshot(id: string, signal?: AbortSignal): Promise<ReviewSnapshot> {
@@ -261,15 +272,7 @@ export class ReviewContext implements ReviewToolContext {
     const path = reviewPath(input.path);
     if (input.endLine < input.startLine || input.endLine - input.startLine >= 500)
       reviewError('range_invalid', 'Request 1 to 500 lines with endLine >= startLine.');
-    const entry = snapshot[input.version].get(path);
-    if (!entry)
-      reviewError('file_not_found', 'File does not exist in the requested snapshot version.');
-    if (entry.mode === '160000')
-      reviewError('file_unsupported', 'Submodule entries do not contain source text.');
-    const content = await this.git(snapshot.root).content(entry, signal);
-    if (content.includes(0))
-      reviewError('file_binary', 'Binary files cannot be read as source text.');
-    const source = content.toString('utf8').split('\n');
+    const source = (await this.fileContent(snapshot, path, input.version, signal)).split('\n');
     if (source.at(-1) === '') source.pop();
     if (input.startLine > source.length && source.length !== 0)
       reviewError('range_invalid', 'startLine is past the end of the file.');
@@ -297,6 +300,129 @@ export class ReviewContext implements ReviewToolContext {
       contentTruncated,
       nextStartLine: endLine && endLine < source.length ? endLine + 1 : null,
     };
+  }
+
+  private async fileContent(
+    snapshot: ReviewSnapshot,
+    path: string,
+    version: FileVersion,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const entry = snapshot[version].get(path);
+    if (!entry)
+      reviewError('file_not_found', 'File does not exist in the requested snapshot version.');
+    if (entry.mode === '160000')
+      reviewError('file_unsupported', 'Submodule entries do not contain source text.');
+    const content = await this.git(snapshot.root).content(entry, signal);
+    if (content.includes(0))
+      reviewError('file_binary', 'Binary files cannot be read as source text.');
+    signal?.throwIfAborted();
+    return content.toString('utf8');
+  }
+
+  async citeFiles(
+    input: { reviewId: string; references: FileReferenceTarget[] },
+    signal?: AbortSignal,
+  ): Promise<{ references: FileReference[] }> {
+    const snapshot = await this.snapshot(input.reviewId, signal);
+    if (!input.references.length || input.references.length > 20)
+      reviewError('references_invalid', 'Request 1 to 20 file references.');
+    const references: FileReference[] = [];
+    for (const target of input.references) {
+      const path = reviewPath(target.path);
+      let location: WholeFileReference | (FileReferenceRange & { scope: 'range' });
+      if (target.scope === 'file') {
+        if ('startLine' in target || 'endLine' in target)
+          reviewError('reference_scope_invalid', 'Whole-file references must omit line fields.');
+        await this.fileContent(snapshot, path, target.version, signal);
+        location = { path, version: target.version, scope: 'file' };
+      } else {
+        if (target.scope !== undefined && target.scope !== 'range')
+          reviewError('reference_scope_invalid', 'Use file or range reference scope.');
+        if (
+          !Number.isSafeInteger(target.startLine) ||
+          !Number.isSafeInteger(target.endLine) ||
+          target.startLine < 1 ||
+          target.endLine < target.startLine ||
+          target.endLine - target.startLine >= 500
+        )
+          reviewError('range_invalid', 'Request 1 to 500 lines with endLine >= startLine.');
+        const file = await this.readFile({ ...target, path, reviewId: snapshot.id }, signal);
+        if (target.endLine > file.totalLines)
+          reviewError('range_invalid', 'The entire reference range must exist in the file.');
+        if (file.truncated)
+          reviewError(
+            'reference_truncated',
+            'Reference content is truncated. Select a smaller range.',
+          );
+        location = {
+          path,
+          version: target.version,
+          scope: 'range',
+          startLine: target.startLine,
+          endLine: target.endLine,
+        };
+      }
+      // Keep legacy range identities stable; whole-file identities are a distinct target.
+      const identity =
+        location.scope === 'file'
+          ? [snapshot.id, path, location.version, 'file']
+          : [snapshot.id, path, location.version, location.startLine, location.endLine];
+      const referenceId = `ref_${createHash('sha256')
+        .update(JSON.stringify(identity))
+        .digest('hex')}`;
+      const displayPath = path.replace(/[\r\n\t]/g, (character) =>
+        character === '\r' ? '\\r' : character === '\n' ? '\\n' : '\\t',
+      );
+      const lineLabel =
+        location.scope === 'file'
+          ? ''
+          : `:${location.startLine}${location.endLine === location.startLine ? '' : `–${location.endLine}`}`;
+      const label = `${displayPath}${lineLabel}${location.version === 'old' ? ' (old)' : ''}`;
+      const escapedLabel = label.replace(/[\\`*_[\]<>!|(){}]/g, '\\$&');
+      references.push({
+        ...location,
+        referenceId,
+        reviewId: snapshot.id,
+        repository: snapshot.root,
+        label,
+        markdown: `[${escapedLabel}](review-file:${referenceId})`,
+      });
+    }
+    // Validate the whole batch before publishing anything, including after async reads.
+    await this.snapshot(snapshot.id, signal);
+    const registered = this.fileReferences.get(snapshot.id) ?? new Map<string, FileReference>();
+    const newIds = new Set(references.map(({ referenceId }) => referenceId));
+    for (const id of registered.keys()) newIds.delete(id);
+    if (registered.size + newIds.size > MAX_FILE_REFERENCES)
+      reviewError('reference_limit', 'Review exceeds 1,000 file references. Create a new review.');
+    for (const reference of references) registered.set(reference.referenceId, { ...reference });
+    this.fileReferences.set(snapshot.id, registered);
+    return { references };
+  }
+
+  async getFileReference(referenceId: string, signal?: AbortSignal): Promise<FileReference> {
+    await this.state(signal);
+    this.prune();
+    for (const references of this.fileReferences.values()) {
+      const reference = references.get(referenceId);
+      if (!reference) continue;
+      await this.snapshot(reference.reviewId, signal);
+      return { ...reference };
+    }
+    return reviewError(
+      'reference_not_found',
+      'File reference expired or is unknown. Call cite_files again.',
+    );
+  }
+
+  async readFileReference(referenceId: string, signal?: AbortSignal) {
+    const reference = await this.getFileReference(referenceId, signal);
+    const snapshot = await this.snapshot(reference.reviewId, signal);
+    const content = await this.fileContent(snapshot, reference.path, reference.version, signal);
+    // Preserve exact text, including CRLF and the final newline, for editor comparison.
+    await this.snapshot(reference.reviewId, signal);
+    return { reference, content };
   }
 
   async searchCode(
@@ -384,5 +510,6 @@ export class ReviewContext implements ReviewToolContext {
 
   dispose() {
     this.snapshots.clear();
+    this.fileReferences.clear();
   }
 }

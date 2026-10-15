@@ -7,6 +7,7 @@ import { Icon } from './Icon';
 import { Thread, type ThreadComponents } from './assistant-ui/elements/thread.aui';
 import { SyntaxHighlighter } from './assistant-ui/elements/syntax-highlighter';
 import { cn } from '../lib/utils';
+import { isFileReferenceId } from '@shared/protocol';
 import {
   ReviewComposerContext,
   ReviewComposerInput,
@@ -17,6 +18,7 @@ import {
 
 interface ChatActions {
   openFile(uri: string): Promise<unknown>;
+  openReference(referenceId: string): Promise<unknown>;
   openCode(code: string, language: string): Promise<unknown>;
   copy(text: string): Promise<unknown>;
 }
@@ -72,19 +74,27 @@ function CodeHeader({ language = '', code }: CodeHeaderProps) {
 function MarkdownLink({ href, children }: ComponentPropsWithoutRef<'a'>) {
   const actions = useContext(ChatActionsContext)!;
   if (href?.startsWith('review-file:')) {
+    let target: string;
+    try {
+      target = decodeURIComponent(href.slice('review-file:'.length));
+    } catch {
+      return <span title="引用格式无效">{children}</span>;
+    }
+    const reference = isFileReferenceId(target);
+    if (!reference && !/^(file:|vscode-remote:)/.test(target))
+      return <span title="引用格式无效">{children}</span>;
     return (
       <a
-        className="text-link underline underline-offset-2"
+        className={cn(
+          'text-link underline underline-offset-2',
+          reference && 'rounded-sm bg-code px-1 py-0.5 font-mono text-[0.9em]',
+        )}
         href={href}
         onClick={(event) => {
           event.preventDefault();
-          try {
-            void actions
-              .openFile(decodeURIComponent(href.slice('review-file:'.length)))
-              .catch(() => {});
-          } catch {
-            /* Ignore malformed file references. */
-          }
+          void (reference ? actions.openReference(target) : actions.openFile(target)).catch(
+            () => {},
+          );
         }}
       >
         {children}

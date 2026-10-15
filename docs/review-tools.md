@@ -1,15 +1,16 @@
 # 仓库审查工具
 
-Extension Host 为共享 AI SDK Agent 注册下列六个只读工具。OpenAI Provider 会将它们放入 `review` namespace；其他 Provider 共用相同定义和执行逻辑。VS Code 的编辑器、文件查找与诊断由 `VSCodeReviewWorkspace` 适配，Git 与快照由 `ReviewContext` 管理。
+Extension Host 为共享 AI SDK Agent 注册下列七个只读工具。OpenAI Provider 会将它们放入 `review` namespace；其他 Provider 共用相同定义和执行逻辑。VS Code 的编辑器、文件查找与诊断由 `VSCodeReviewWorkspace` 适配，Git、快照与文件区域引用由 `ReviewContext` 管理。
 
-| 工具                 | 输入                                              | 结果                                                                                         |
-| -------------------- | ------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `get_review_context` | `{}`                                              | 工作区、仓库列表、当前仓库根目录/分支/HEAD、活动文件/语言/选区、未保存文件列表、工程配置入口 |
-| `list_changes`       | `{ scope, baseRef? }`                             | `reviewId`、创建/过期时间、固定的 HEAD/base、变更状态与 `oldPath`/`newPath`                  |
-| `get_diff`           | `{ reviewId, paths, cursor? }`                    | Git unified patch 片段、hunks、每行的旧/新行号、二进制标记、`truncated`/`nextCursor`         |
-| `read_file`          | `{ reviewId, path, version, startLine, endLine }` | 指定快照版本的带行号代码、总行数、截断标记、`nextStartLine`                                  |
-| `search_code`        | `{ query, glob?, limit? }`                        | 当前代码中区分大小写的单行字面量匹配、文件/行/列、前后各一行上下文                           |
-| `get_diagnostics`    | `{ paths }`                                       | VS Code 当前诊断的来源、严重级别、代码、消息、位置及截断标记                                 |
+| 工具                 | 输入                                                                          | 结果                                                                                         |
+| -------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `get_review_context` | `{}`                                                                          | 工作区、仓库列表、当前仓库根目录/分支/HEAD、活动文件/语言/选区、未保存文件列表、工程配置入口 |
+| `list_changes`       | `{ scope, baseRef? }`                                                         | `reviewId`、创建/过期时间、固定的 HEAD/base、变更状态与 `oldPath`/`newPath`                  |
+| `get_diff`           | `{ reviewId, paths, cursor? }`                                                | Git unified patch 片段、hunks、每行的旧/新行号、二进制标记、`truncated`/`nextCursor`         |
+| `read_file`          | `{ reviewId, path, version, startLine, endLine }`                             | 指定快照版本的带行号代码、总行数、截断标记、`nextStartLine`                                  |
+| `cite_files`         | `{ reviewId, references: [{ path, version, scope?, startLine?, endLine? }] }` | 文件或区域的 `referenceId`、`scope`、仓库/路径/版本、可选行范围、显示标签与 Markdown         |
+| `search_code`        | `{ query, glob?, limit? }`                                                    | 当前代码中区分大小写的单行字面量匹配、文件/行/列、前后各一行上下文                           |
+| `get_diagnostics`    | `{ paths }`                                                                   | VS Code 当前诊断的来源、严重级别、代码、消息、位置及截断标记                                 |
 
 所有工具路径均相对当前仓库根目录；上下文中的工作区、活动文件和未保存文件使用绝对路径。行号与列号从 1 开始，列按 VS Code 的 UTF-16 单位计数；选区与诊断的结束位置不包含在范围内，`read_file.endLine` 包含在范围内。多仓库时优先选择活动文件所属的最深层仓库；只有一个仓库时可以直接使用它。没有明确仓库时，上下文返回 `repository: null`，其他工具返回 `repository_unavailable`。
 
@@ -33,6 +34,8 @@ get_review_context({})
 list_changes({ scope: "all" })
 get_diff({ reviewId: "上一步的 UUID", paths: ["src/example.ts"] })
 read_file({ reviewId: "同一个 UUID", path: "src/example.ts", version: "new", startLine: 1, endLine: 120 })
+cite_files({ reviewId: "同一个 UUID", references: [{ path: "src/example.ts", version: "new", startLine: 42, endLine: 48 }] })
+cite_files({ reviewId: "同一个 UUID", references: [{ path: "src/example.ts", version: "new", scope: "file" }, { path: "src/example.ts", version: "new", scope: "range", startLine: 42, endLine: 48 }] })
 search_code({ query: "exampleFunction", glob: "**/*.{ts,tsx}", limit: 30 })
 get_diagnostics({ paths: ["src/example.ts"] })
 ```
@@ -40,6 +43,63 @@ get_diagnostics({ paths: ["src/example.ts"] })
 `get_diff` 每页返回一个文件的部分或完整 patch，保留请求路径顺序。使用相同 `reviewId` 和 `paths` 携带 `nextCursor` 继续读取，直至 `truncated: false`。将同一文件的 `patch` 按页拼接即可恢复完整文本 patch；`patchOffset` 标识字符偏移，超长行的结构化片段带 `partial: true`。新增行的 `oldLine`、删除行的 `newLine` 为 `null`。二进制文件返回 Git 风格的二进制差异提示，不返回可应用的二进制载荷。
 
 `search_code` 和 `get_diagnostics` 查询当前编辑器状态，可能与快照不同；诊断也可能尚未随编辑器更新。搜索优先使用未保存内容，跳过 `.git`、`node_modules`、`dist`、`build`、二进制文件、过大文件和不可访问文件，并返回 `skippedFiles`。
+
+## 文件与区域引用
+
+`cite_files` 一次登记 1–20 个文件或区域，可在同一批次混合两种类型。每项必须明确指定快照的 `old` / `new` 版本：
+
+| `scope` | 行号参数                            | 含义与点击行为                                                    |
+| ------- | ----------------------------------- | ----------------------------------------------------------------- |
+| `file`  | 禁止提供 `startLine`、`endLine`     | 引用整份文本文件，点击打开文件，不主动选区或滚动定位              |
+| `range` | 必须同时提供 `startLine`、`endLine` | 引用指定代码区域，点击打开文件并选中、滚动到对应行范围            |
+| 省略    | 必须同时提供 `startLine`、`endLine` | 兼容原有调用，等价于 `range`，返回结果仍明确标注 `scope: "range"` |
+
+范围引用的起止行从 1 开始且都包含在范围内。工具会实际读取对应快照并校验整个范围；不会把超出 EOF 的结束行静默截短。单区域最多 500 行、24,000 字符，空文件和截断区域不能作为行范围引用。单行引用使用相同的起止行。整文件引用支持空文件、超过 500 行或含超长行的文本文件，继续受单文件 1 MiB 限制；二进制文件与子模块不支持文本引用。未指定 `scope` 且缺少行号、仅提供一端行号或在 `file` 类型混入行号均会报错。
+
+返回示例（ID 为示意，实际为 `ref_` 加 64 位十六进制摘要）：
+
+```json
+{
+  "references": [
+    {
+      "referenceId": "ref_example",
+      "reviewId": "来自 list_changes 的 UUID",
+      "repository": "/workspace/project",
+      "path": "src/example.ts",
+      "version": "new",
+      "scope": "range",
+      "startLine": 42,
+      "endLine": 48,
+      "label": "src/example.ts:42–48",
+      "markdown": "[src/example.ts:42–48](review-file:ref_example)"
+    },
+    {
+      "referenceId": "ref_file_example",
+      "reviewId": "来自 list_changes 的 UUID",
+      "repository": "/workspace/project",
+      "path": "src/example.ts",
+      "version": "new",
+      "scope": "file",
+      "label": "src/example.ts",
+      "markdown": "[src/example.ts](review-file:ref_file_example)"
+    }
+  ]
+}
+```
+
+`referenceId` 唯一绑定快照、路径、版本与引用类型；范围类型还绑定起止行。整文件与覆盖全部行的范围引用具有不同 ID。旧调用和显式 `scope: "range"` 使用相同的区域 ID，原有区域 ID 算法保持不变；重复登记同一目标会复用 ID。不同文件、版本、行范围或快照使用不同 ID。重命名和删除代码应使用对应版本真实存在的路径，旧版本的显示标签带 `(old)`。Markdown 标签会转义文件名中的语法字符，原始 `path` 保持不变。整文件结果不含虚构的起止行，链接标签只显示文件名。
+
+一个批次全部校验成功后才会登记引用；每个快照最多 1,000 个不同文件或区域，重复引用不占用额外容量。引用与快照共用 15 分钟有效期和最近四个快照的保留限制；过期、淘汰或删除会话会一起清理。Host 可通过 `ReviewContext.getFileReference(referenceId)` 取得定位信息，该接口不是模型工具，并会重新检查工作区信任与仓库是否仍然打开。
+
+Agent instructions 要求模型先用 `read_file` / `get_diff` 核对证据，再批量调用 `cite_files`，将返回的 `markdown` 原样放在对应结论旁。讨论文件职责或入口使用 `scope: "file"`；具体代码问题使用精确的 `scope: "range"`。实时搜索和诊断的位置应先用快照核对；工具报错时修正参数或说明无法引用，不得编造 ID。工具验证目标是否存在，不判断它是否足以支持模型结论；通用解释不强制引用。
+
+引用通过标准 AI SDK 工具结果进入 UI 与模型历史。正文中的 `review-file:<referenceId>` 由 Markdown 链接组件高亮；用户点击后，通过独立的 `reference/open` 消息传递对应会话的 Host `sessionId` 与 `referenceId`，不会将引用 ID 当作文件 URI。旧的 `review-file:<encoded-file-uri>` 链接仍使用原有文件打开路径。
+
+Host 只在对应会话内解析引用，并重新检查快照、工作区信任与仓库边界。新版本引用的完整快照内容与当前编辑器内容一致时，在现有 editor 中打开原文件；内容已变化、文件已删除、符号链接被替换或引用旧版本时，使用 `meerkat-review` 的只读虚拟文档展示原快照。不会把旧版本行号套用到不同的当前文件上。`readFileReference` 保留完整快照文本（含 CRLF、结尾换行），不受模型工具每页 500 行的限制。
+
+编辑器选区从 `startLine - 1` 的第 0 列开始，直到 `endLine - 1` 的行尾，包含所引用的所有行；随后滚动到选区。默认使用 `ViewColumn.Active`，即左侧聊天旁现有的编辑区，点击后将焦点移入 editor。过期、已淘汰或 Host 重启后的引用会明确提示重新生成；已保存的聊天文字和链接不会恢复已结束的 Host 会话。
+
+`cite_files` 本身只登记引用，用户点击才会打开编辑器；不会修改任何文件。
 
 ## 限制与错误
 
@@ -53,9 +113,9 @@ get_diagnostics({ paths: ["src/example.ts"] })
 ## 测试
 
 ```sh
-bun test tests/reviewTools.test.ts tests/reviewAgent.test.ts tests/provider.test.ts
+bun test tests/fileReferences.test.ts tests/reviewTools.test.ts tests/reviewAgent.test.ts tests/provider.test.ts
 bun run check
 bun run build
 ```
 
-仓库 fixtures 使用真实 Git，验证各范围、重命名、插入行号、分页与快照稳定性；文本 patch 通过 `git apply --check` 验证。SDK 集成测试通过真实 AI SDK、OpenAI Provider 与 Bridge runtime 执行全部六个工具，并检查工具结果历史、跨轮复用和会话删除清理。VS Code 适配测试检查原生 API 参数、未保存文档过滤、坐标转换及诊断等级映射。
+仓库 fixtures 使用真实 Git，验证各范围、重命名、插入行号、分页与快照稳定性；文本 patch 通过 `git apply --check` 验证。SDK 集成测试通过真实 AI SDK、OpenAI Provider 与 Bridge runtime 执行全部七个工具，并检查引用指令、工具结果历史、最终回答引用、跨轮复用和会话删除清理。`fileReferences.test.ts` 覆盖区域精度、范围校验、版本/路径绑定、Markdown 转义、容量限制、会话隔离、完整快照读取与引用生命周期。VS Code 适配测试检查原生 API 参数、未保存文档过滤、坐标转换及诊断等级映射；引用导航测试验证 IPC、选区、滚动以及旧版/修改/删除/符号链接文件的快照回退。Webview 测试覆盖高亮链接点击、历史会话绑定、旧 URI 链接兼容、无效链接和错误展示。

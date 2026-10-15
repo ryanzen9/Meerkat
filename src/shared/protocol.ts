@@ -4,6 +4,7 @@ export type WebviewToExtensionMessage =
   | { type: 'webview/ready' }
   | { type: 'workspace/refresh'; requestId: string }
   | { type: 'file/open'; requestId: string; uri: string }
+  | { type: 'reference/open'; requestId: string; sessionId: string; referenceId: string }
   | { type: 'code/open'; requestId: string; code: string; language: string }
   | { type: 'clipboard/write'; requestId: string; text: string }
   | { type: 'settings/open'; requestId: string }
@@ -39,6 +40,10 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+export function isFileReferenceId(value: unknown): value is string {
+  return typeof value === 'string' && /^ref_[a-f0-9]{64}$/.test(value);
+}
+
 export function isWebviewMessage(value: unknown): value is WebviewToExtensionMessage {
   if (!isRecord(value)) return false;
   switch (value.type) {
@@ -66,6 +71,13 @@ export function isWebviewMessage(value: unknown): value is WebviewToExtensionMes
         typeof value.uri === 'string' &&
         value.uri.length > 0 &&
         value.uri.length <= 8192
+      );
+    case 'reference/open':
+      return (
+        isRequestId(value.requestId) &&
+        typeof value.sessionId === 'string' &&
+        /^[\w-]{1,128}$/.test(value.sessionId) &&
+        isFileReferenceId(value.referenceId)
       );
     case 'code/open':
       return (

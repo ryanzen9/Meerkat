@@ -66,6 +66,32 @@ export function reviewTools(context?: ReviewToolContext) {
       execute: (input, { abortSignal }) =>
         execute(abortSignal, (service) => service.readFile(input, abortSignal)),
     }),
+    cite_files: tool({
+      description:
+        'Create validated file or code-region references before pointing to repository files or answering with concrete code findings. Use a reviewId from list_changes and verified paths and old/new versions. Batch 1 to 20 references, mixing both scopes if needed. Use scope: file with no line fields to reference a whole text file, including empty files or files over 500 lines; clicking opens the file without selecting all its text. Use scope: range with startLine and endLine verified with read_file or get_diff for exact code evidence; range scope may be omitted for existing callers. Ranges are 1-based, inclusive, at most 500 lines, and must exist in full. Returns referenceId, explicit scope, location and ready-to-use markdown. Copy the returned markdown verbatim into the answer; never invent IDs or links. This tool only registers references and does not open an editor.',
+      inputSchema: z.object({
+        reviewId,
+        references: z
+          .array(
+            z.union([
+              z
+                .object({ path, version: z.enum(['old', 'new']), scope: z.literal('file') })
+                .strict(),
+              z.object({
+                path,
+                version: z.enum(['old', 'new']),
+                scope: z.literal('range').optional(),
+                startLine: z.number().int().min(1),
+                endLine: z.number().int().min(1),
+              }),
+            ]),
+          )
+          .min(1)
+          .max(20),
+      }),
+      execute: (input, { abortSignal }) =>
+        execute(abortSignal, (service) => service.citeFiles(input, abortSignal)),
+    }),
     search_code: tool({
       description:
         'Search current repository files for a case-sensitive literal query, optionally filtered by a VS Code glob. Returns 1-based locations and surrounding lines, including unsaved overlays. This is a live search, not a snapshot search. Binary, large and inaccessible files are skipped; scans at most 2,000 files.',

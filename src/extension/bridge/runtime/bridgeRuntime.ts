@@ -173,6 +173,14 @@ export class BridgeRuntime {
     if (!run) throw new BridgeError('run_not_found', 'Run not found.', 404);
     return { id: run.id, sessionId: run.sessionId, status: run.status };
   }
+  async readFileReference(sessionId: string, referenceId: string) {
+    if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
+    this.sessions.get(sessionId);
+    const context = this.reviewContexts.get(sessionId);
+    if (!context)
+      throw new BridgeError('reference_not_found', 'File reference expired or is unknown.', 404);
+    return context.readFileReference(referenceId);
+  }
   cancel(id: string): void {
     const run = this.runs.get(id);
     if (!run) throw new BridgeError('run_not_found', 'Run not found.', 404);

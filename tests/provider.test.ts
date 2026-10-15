@@ -1,6 +1,10 @@
 import { expect, mock, test } from 'bun:test';
 import type * as vscode from 'vscode';
 import type { ExtensionToWebviewMessage } from '../src/shared/protocol';
+import { rm, symlink } from 'node:fs/promises';
+import { join } from 'node:path';
+import { reviewFixture } from './reviewFixture';
+import { BridgeError } from '../src/extension/bridge/errors';
 
 const nativeCalls: { action: string; value: unknown }[] = [];
 let gitExtension: unknown;
@@ -8,6 +12,9 @@ let activeEditor: vscode.TextEditor | undefined;
 const editorDocuments: vscode.TextDocument[] = [];
 let foundFiles: vscode.Uri[] = [];
 let editorDiagnostics: vscode.Diagnostic[] = [];
+let navigationRoot: string | undefined;
+const fileDocuments = new Map<string, vscode.TextDocument>();
+const contentProviders = new Map<string, vscode.TextDocumentContentProvider>();
 
 const localUri = (path: string) => ({
   scheme: 'file',
@@ -21,8 +28,17 @@ mock.module('vscode', () => ({
     file: localUri,
     parse: (value: string) => {
       const url = new URL(value);
-      return { scheme: url.protocol.slice(0, -1), path: url.pathname, toString: () => value };
+      return {
+        scheme: url.protocol.slice(0, -1),
+        path: decodeURIComponent(url.pathname),
+        query: url.search.slice(1),
+        toString: () => value,
+      };
     },
+    from: (parts: { scheme: string; path: string; query?: string }) => ({
+      ...parts,
+      toString: () => `${parts.scheme}:${encodeURI(parts.path)}?${parts.query ?? ''}`,
+    }),
     joinPath: (uri: { toString(): string }, ...paths: string[]) => ({
       toString: () => `${uri.toString()}/${paths.join('/')}`,
     }),
@@ -36,9 +52,28 @@ mock.module('vscode', () => ({
       return foundFiles;
     },
     getWorkspaceFolder: (uri: { path: string }) =>
-      uri.path.startsWith('/workspace/') ? {} : undefined,
+      uri.path.startsWith('/workspace/') ||
+      (navigationRoot && uri.path.startsWith(`${navigationRoot}/`))
+        ? {}
+        : undefined,
+    registerTextDocumentContentProvider: (
+      scheme: string,
+      provider: vscode.TextDocumentContentProvider,
+    ) => {
+      contentProviders.set(scheme, provider);
+      return { dispose: () => contentProviders.delete(scheme) };
+    },
     openTextDocument: async (value: unknown) => {
       nativeCalls.push({ action: 'document', value });
+      const uri = value as vscode.Uri;
+      const document = fileDocuments.get(uri.toString());
+      if (document) return document;
+      const provider = contentProviders.get(uri.scheme);
+      if (provider)
+        return textDocument(
+          uri,
+          (await provider.provideTextDocumentContent(uri, {} as vscode.CancellationToken)) ?? '',
+        );
       return value;
     },
   },
@@ -46,8 +81,12 @@ mock.module('vscode', () => ({
     get activeTextEditor() {
       return activeEditor;
     },
-    showTextDocument: async (value: unknown) => {
+    showTextDocument: async (value: unknown, options: unknown) => {
       nativeCalls.push({ action: 'editor', value });
+      nativeCalls.push({ action: 'editor-options', value: options });
+      return {
+        revealRange: (...args: unknown[]) => nativeCalls.push({ action: 'reveal', value: args }),
+      };
     },
   },
   env: {
@@ -64,6 +103,16 @@ mock.module('vscode', () => ({
   },
   extensions: { getExtension: () => gitExtension },
   languages: { getDiagnostics: () => editorDiagnostics },
+  ViewColumn: { Active: -1 },
+  TextEditorRevealType: { InCenterIfOutsideViewport: 3 },
+  Range: class {
+    readonly start: { line: number; character: number };
+    readonly end: { line: number; character: number };
+    constructor(startLine: number, startCharacter: number, endLine: number, endCharacter: number) {
+      this.start = { line: startLine, character: startCharacter };
+      this.end = { line: endLine, character: endCharacter };
+    }
+  },
   RelativePattern: class {
     constructor(
       readonly base: string,
@@ -89,6 +138,17 @@ mock.module('vscode', () => ({
   },
 }));
 const { ReviewPanelProvider } = await import('../src/extension/providers/ReviewPanelProvider');
+const { ReferenceEditorService } = await import('../src/extension/services/ReferenceEditorService');
+
+function textDocument(uri: vscode.Uri, text: string): vscode.TextDocument {
+  const lines = text.split(/\r\n|\r|\n/);
+  return {
+    uri,
+    getText: () => text,
+    lineCount: lines.length,
+    lineAt: (index: number) => ({ text: lines[index]! }),
+  } as unknown as vscode.TextDocument;
+}
 
 function signal<T>() {
   const listeners = new Set<(value: T) => unknown>();
@@ -248,6 +308,219 @@ test('editor actions acknowledge requests and reject files outside the workspace
   expect(nativeCalls).toContainEqual({ action: 'clipboard', value: 'snippet' });
   expect(nativeCalls).toContainEqual({ action: 'command', value: 'workbench.action.openSettings' });
   expect(view.sent.filter(({ type }) => type === 'host/action')).toHaveLength(4);
+  provider.dispose();
+});
+
+test('reference clicks resolve the session region, open the live file, select inclusive lines and reveal it', async () => {
+  const content = 'one\r\n😀two\r\nthree';
+  const f = await reviewFixture({ 'file.ts': content });
+  const { reviewId } = await f.context.listChanges({ scope: 'all' });
+  const reference = (
+    await f.context.citeFiles({
+      reviewId,
+      references: [{ path: 'file.ts', version: 'new', startLine: 1, endLine: 2 }],
+    })
+  ).references[0]!;
+  const fileUri = localUri(join(f.root, 'file.ts')) as vscode.Uri;
+  const document = textDocument(fileUri, content);
+  fileDocuments.set(fileUri.toString(), document);
+  navigationRoot = f.root;
+  const navigation = new ReferenceEditorService({
+    readFileReference: async (sessionId, referenceId) => {
+      expect(sessionId).toBe('host-session');
+      return f.context.readFileReference(referenceId);
+    },
+  });
+  const provider = new ReviewPanelProvider(
+    uri,
+    { ...services(), referenceEditor: navigation },
+    output,
+  );
+  try {
+    const view = fakeView();
+    provider.resolveWebviewView(view.view);
+    const completed = new Promise<void>((resolve) => {
+      view.webview.postMessage = async (message) => {
+        view.sent.push(message);
+        resolve();
+        return true;
+      };
+    });
+    nativeCalls.length = 0;
+    view.receive.emit({
+      type: 'reference/open',
+      requestId: 'region',
+      sessionId: 'host-session',
+      referenceId: reference.referenceId,
+    });
+    await completed;
+    expect(view.sent).toEqual([{ type: 'host/action', requestId: 'region' }]);
+    expect(nativeCalls.find(({ action }) => action === 'editor')?.value).toBe(document);
+    const options = nativeCalls.find(({ action }) => action === 'editor-options')!
+      .value as vscode.TextDocumentShowOptions;
+    expect(options).toMatchObject({
+      viewColumn: -1,
+      preview: true,
+      preserveFocus: false,
+      selection: { start: { line: 0, character: 0 }, end: { line: 1, character: 5 } },
+    });
+    expect(nativeCalls).toContainEqual({ action: 'reveal', value: [options.selection, 3] });
+    expect(nativeCalls.filter(({ action }) => action === 'document')).toHaveLength(1);
+  } finally {
+    provider.dispose();
+    navigation.dispose();
+    fileDocuments.clear();
+    navigationRoot = undefined;
+  }
+});
+
+test('whole-file references open live and snapshot documents, including empty files, without selecting text', async () => {
+  const content = Array.from({ length: 600 }, () => 'line').join('\n');
+  const f = await reviewFixture({ 'file.ts': content, 'empty.ts': '' });
+  const { reviewId } = await f.context.listChanges({ scope: 'all' });
+  const references = (
+    await f.context.citeFiles({
+      reviewId,
+      references: [
+        { path: 'file.ts', version: 'new', scope: 'file' },
+        { path: 'file.ts', version: 'old', scope: 'file' },
+        { path: 'empty.ts', version: 'new', scope: 'file' },
+      ],
+    })
+  ).references;
+  const fileUri = localUri(join(f.root, 'file.ts')) as vscode.Uri;
+  const emptyUri = localUri(join(f.root, 'empty.ts')) as vscode.Uri;
+  fileDocuments.set(fileUri.toString(), textDocument(fileUri, content));
+  fileDocuments.set(emptyUri.toString(), textDocument(emptyUri, ''));
+  navigationRoot = f.root;
+  const navigation = new ReferenceEditorService({
+    readFileReference: (_sessionId, referenceId) => f.context.readFileReference(referenceId),
+  });
+  try {
+    for (const scenario of ['live', 'old', 'edited', 'empty'] as const) {
+      if (scenario === 'edited') {
+        await f.write('file.ts', 'changed\n');
+        fileDocuments.set(fileUri.toString(), textDocument(fileUri, 'changed\n'));
+      }
+      nativeCalls.length = 0;
+      const reference = references[scenario === 'empty' ? 2 : scenario === 'old' ? 1 : 0]!;
+      await navigation.open('host-session', reference.referenceId);
+      const document = nativeCalls.find(({ action }) => action === 'editor')!
+        .value as vscode.TextDocument;
+      expect(document.uri.scheme).toBe(
+        scenario === 'old' || scenario === 'edited' ? 'meerkat-review' : 'file',
+      );
+      expect(document.getText()).toBe(scenario === 'empty' ? '' : content);
+      const options = nativeCalls.find(({ action }) => action === 'editor-options')!
+        .value as vscode.TextDocumentShowOptions;
+      expect(Object.hasOwn(options, 'selection')).toBe(false);
+      expect(options).toMatchObject({ viewColumn: -1, preview: true, preserveFocus: false });
+      expect(nativeCalls.some(({ action }) => action === 'reveal')).toBe(false);
+    }
+  } finally {
+    navigation.dispose();
+    fileDocuments.clear();
+    navigationRoot = undefined;
+  }
+});
+
+test('old, edited, deleted and symlink-replaced files open their exact read-only snapshot regions', async () => {
+  const content = 'one\ntwo\nthree\n';
+  const f = await reviewFixture({ 'file.ts': content });
+  const outside = await reviewFixture({ 'file.ts': content });
+  const { reviewId } = await f.context.listChanges({ scope: 'all' });
+  const references = (
+    await f.context.citeFiles({
+      reviewId,
+      references: [
+        { path: 'file.ts', version: 'old', startLine: 2, endLine: 3 },
+        { path: 'file.ts', version: 'new', startLine: 2, endLine: 3 },
+      ],
+    })
+  ).references;
+  const fileUri = localUri(join(f.root, 'file.ts')) as vscode.Uri;
+  navigationRoot = f.root;
+  const navigation = new ReferenceEditorService({
+    readFileReference: (_sessionId, referenceId) => f.context.readFileReference(referenceId),
+  });
+  try {
+    for (const scenario of ['old', 'edited', 'deleted', 'symlink'] as const) {
+      if (scenario === 'edited') {
+        await f.write('file.ts', 'different\n');
+        fileDocuments.set(fileUri.toString(), textDocument(fileUri, 'different\n'));
+      } else if (scenario === 'deleted') await rm(join(f.root, 'file.ts'));
+      else if (scenario === 'symlink')
+        await symlink(join(outside.root, 'file.ts'), join(f.root, 'file.ts'));
+      nativeCalls.length = 0;
+      const reference = references[scenario === 'old' ? 0 : 1]!;
+      await navigation.open('host-session', reference.referenceId);
+      const document = nativeCalls.find(({ action }) => action === 'editor')!
+        .value as vscode.TextDocument;
+      expect(document.uri.scheme).toBe('meerkat-review');
+      expect(document.uri.path).toBe(`/${reference.version}/file.ts`);
+      expect(document.getText()).toBe(content);
+      const options = nativeCalls.find(({ action }) => action === 'editor-options')!
+        .value as vscode.TextDocumentShowOptions;
+      expect(options.selection).toMatchObject({
+        start: { line: 1, character: 0 },
+        end: { line: 2, character: 5 },
+      });
+      if (scenario !== 'edited')
+        expect(nativeCalls.filter(({ action }) => action === 'document')).toHaveLength(1);
+    }
+    const snapshotProvider = contentProviders.get('meerkat-review')!;
+    const invalidUri = {
+      scheme: 'meerkat-review',
+      path: '/new/other.ts',
+      query: new URLSearchParams({
+        sessionId: 'host-session',
+        referenceId: references[1]!.referenceId,
+      }).toString(),
+    } as vscode.Uri;
+    await expect(
+      Promise.resolve(
+        snapshotProvider.provideTextDocumentContent(invalidUri, {} as vscode.CancellationToken),
+      ),
+    ).rejects.toMatchObject({ code: 'reference_not_found' });
+  } finally {
+    navigation.dispose();
+    fileDocuments.clear();
+    navigationRoot = undefined;
+  }
+  expect(contentProviders.has('meerkat-review')).toBe(false);
+});
+
+test('expired reference clicks show a specific recoverable error without opening an editor', async () => {
+  const provider = new ReviewPanelProvider(
+    uri,
+    {
+      ...services(),
+      referenceEditor: {
+        open: async () => {
+          throw new BridgeError('reference_not_found', 'internal path');
+        },
+      },
+    },
+    output,
+  );
+  const view = fakeView();
+  provider.resolveWebviewView(view.view);
+  nativeCalls.length = 0;
+  view.receive.emit({
+    type: 'reference/open',
+    requestId: 'expired',
+    sessionId: 'host-session',
+    referenceId: `ref_${'a'.repeat(64)}`,
+  });
+  await Bun.sleep(1);
+  expect(view.sent).toEqual([
+    {
+      type: 'host/error',
+      requestId: 'expired',
+      message: '代码引用已失效（会话或快照已结束），请重新生成引用。',
+    },
+  ]);
+  expect(nativeCalls).toHaveLength(0);
   provider.dispose();
 });
 

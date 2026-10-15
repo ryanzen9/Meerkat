@@ -37,6 +37,37 @@ export interface ReviewWorkspace {
 export type ReviewScope = 'staged' | 'working-tree' | 'all' | 'branch';
 export type FileVersion = 'old' | 'new';
 
+export interface FileReferenceRange {
+  path: string;
+  version: FileVersion;
+  // Optional on input for compatibility with existing range-only callers.
+  scope?: 'range' | undefined;
+  startLine: number;
+  endLine: number;
+}
+
+export interface WholeFileReference {
+  path: string;
+  version: FileVersion;
+  scope: 'file';
+  startLine?: never;
+  endLine?: never;
+}
+
+export type FileReferenceTarget = WholeFileReference | FileReferenceRange;
+
+interface FileReferenceDetails {
+  referenceId: string;
+  reviewId: string;
+  repository: string;
+  label: string;
+  markdown: string;
+}
+
+// Registered targets always have an explicit scope; range coordinates are 1-based, inclusive.
+export type FileReference = FileReferenceDetails &
+  (WholeFileReference | (FileReferenceRange & { scope: 'range' }));
+
 export interface ReviewChange {
   path: string;
   oldPath: string | null;
@@ -122,6 +153,10 @@ export interface ReviewToolContext {
     contentTruncated: boolean;
     nextStartLine: number | null;
   }>;
+  citeFiles(
+    input: { reviewId: string; references: FileReferenceTarget[] },
+    signal?: AbortSignal,
+  ): Promise<{ references: FileReference[] }>;
   searchCode(
     input: { query: string; glob?: string | undefined; limit?: number | undefined },
     signal?: AbortSignal,

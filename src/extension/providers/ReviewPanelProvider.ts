@@ -8,6 +8,8 @@ import type { GitService } from '../services/GitService';
 import { createWebviewHtml } from '../webview/html';
 import { WebviewBridgeProxy } from '../bridge/transport/webviewProxy';
 import type { BridgeService } from '../bridge/service';
+import type { ReferenceEditorService } from '../services/ReferenceEditorService';
+import { BridgeError, publicError } from '../bridge/errors';
 
 interface PanelServices {
   workspace: Pick<WorkspaceService, 'read'>;
@@ -15,6 +17,7 @@ interface PanelServices {
   state: Pick<StateService, 'read' | 'incrementMessageCount'>;
   git: Pick<GitService, 'read'>;
   bridge?: Pick<BridgeService, 'request'>;
+  referenceEditor?: Pick<ReferenceEditorService, 'open'>;
 }
 
 export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -150,6 +153,13 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
           await this.post(view, { type: 'host/action', requestId: message.requestId });
           break;
         }
+        case 'reference/open': {
+          if (!this.services.referenceEditor)
+            throw new BridgeError('reference_unavailable', 'Reference navigation is unavailable.');
+          await this.services.referenceEditor.open(message.sessionId, message.referenceId);
+          await this.post(view, { type: 'host/action', requestId: message.requestId });
+          break;
+        }
         case 'demo/hello': {
           const state = await this.services.state.incrementMessageCount();
           const name = message.name.trim() || '开发者';
@@ -163,7 +173,12 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
         }
       }
     } catch (error) {
-      await this.reportError(view, error, 'requestId' in message ? message.requestId : undefined);
+      await this.reportError(
+        view,
+        error,
+        'requestId' in message ? message.requestId : undefined,
+        message.type === 'reference/open' ? referenceErrorMessage(error) : undefined,
+      );
     }
   }
 
@@ -185,11 +200,12 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
     view: vscode.WebviewView,
     error: unknown,
     requestId?: string,
+    message = '面板操作失败，请重试；文件可能已被删除或不在当前工作区中。',
   ): Promise<void> {
     this.output.error('Panel operation failed', error);
     await this.post(view, {
       type: 'host/error',
-      message: '面板操作失败，请重试；文件可能已被删除或不在当前工作区中。',
+      message,
       ...(requestId ? { requestId } : {}),
     });
   }
@@ -209,5 +225,21 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
     this.view = undefined;
     this.ready = false;
     this.listeners.splice(0).forEach((listener) => listener.dispose());
+  }
+}
+
+function referenceErrorMessage(error: unknown): string {
+  switch (publicError(error).code) {
+    case 'session_not_found':
+    case 'reference_not_found':
+    case 'review_not_found':
+    case 'bridge_closed':
+      return '代码引用已失效（会话或快照已结束），请重新生成引用。';
+    case 'workspace_untrusted':
+      return '请先信任当前工作区，再打开代码引用。';
+    case 'repository_unavailable':
+      return '引用所属仓库已不在当前工作区，请重新打开仓库。';
+    default:
+      return '无法打开代码引用，请重新生成引用或重试。';
   }
 }

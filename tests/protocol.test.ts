@@ -10,6 +10,26 @@ const snapshot: PanelSnapshot = {
 };
 
 describe('postMessage boundary validation', () => {
+  test('reference navigation requires a session and an opaque registered-region ID', () => {
+    const message = {
+      type: 'reference/open',
+      requestId: 'click',
+      sessionId: 'session-1',
+      referenceId: `ref_${'a'.repeat(64)}`,
+    };
+    expect(isWebviewMessage(message)).toBe(true);
+    for (const invalid of [
+      { ...message, requestId: '' },
+      { ...message, sessionId: '' },
+      { ...message, sessionId: 'a'.repeat(129) },
+      { ...message, sessionId: '../other' },
+      { ...message, referenceId: 'ref_invented' },
+      { ...message, referenceId: 'file:///etc/passwd' },
+      { ...message, referenceId: `ref_${'a'.repeat(65)}` },
+      { ...message, referenceId: null },
+    ])
+      expect(isWebviewMessage(invalid)).toBe(false);
+  });
   test('accepts only supported requests with bounded payloads', () => {
     expect(isWebviewMessage({ type: 'webview/ready' })).toBe(true);
     expect(isWebviewMessage({ type: 'demo/hello', requestId: 'request-1', name: '开发者' })).toBe(

@@ -61,6 +61,9 @@ class TestHost {
   deleteFailures = 0;
   copiedTexts: string[] = [];
   openedCode: { code: string; language: string }[] = [];
+  openedFiles: string[] = [];
+  openedReferences: { sessionId: string; referenceId: string }[] = [];
+  referenceError?: string;
   savedState: unknown;
   savedWrites = 0;
   holdStream = false;
@@ -244,6 +247,21 @@ class TestHost {
       case 'code/open':
         this.openedCode.push({ code: message.code, language: message.language });
         this.post({ type: 'host/action', requestId: message.requestId });
+        break;
+      case 'file/open':
+        this.openedFiles.push(message.uri);
+        this.post({ type: 'host/action', requestId: message.requestId });
+        break;
+      case 'reference/open':
+        this.openedReferences.push({
+          sessionId: message.sessionId,
+          referenceId: message.referenceId,
+        });
+        this.post(
+          this.referenceError
+            ? { type: 'host/error', requestId: message.requestId, message: this.referenceError }
+            : { type: 'host/action', requestId: message.requestId },
+        );
         break;
       case 'webview/ready':
         this.post({
@@ -682,6 +700,94 @@ test('model selector searches the account catalog and keeps the draft when resel
     'draft to keep',
   );
   expect(host.creations).toHaveLength(0);
+});
+
+test('file-region links dispatch reference IDs with their conversation session, including restored history', async () => {
+  const referenceId = `ref_${'a'.repeat(64)}`;
+  host.responseText = `See [file.ts:2–3](review-file:${referenceId}).`;
+  const view = mount();
+  await connected(view);
+  await send(view, 'first-reference-question');
+  const link = await view.findByRole('link', { name: 'file.ts:2–3' });
+  const state = restoreReviewState(host.savedState);
+  const first = state.sessions.find(({ id }) => id === state.activeSessionId)!;
+  expect(link.className).toContain('font-mono');
+  await act(async () => {
+    fireEvent.click(link);
+    await host.settle();
+  });
+  expect(host.openedReferences).toEqual([{ sessionId: first.bridgeSessionId!, referenceId }]);
+  expect(host.openedFiles).toEqual([]);
+  fireEvent.click(view.getByRole('button', { name: '新建会话' }));
+  host.responseText = 'Another conversation.';
+  await send(view, 'second-reference-question');
+  await view.findByText('Another conversation.');
+  fireEvent.click(view.getByRole('tab', { name: 'History' }));
+  fireEvent.click(view.getByRole('button', { name: /first-reference-question/ }));
+  await act(async () => {
+    fireEvent.click(view.getByRole('link', { name: 'file.ts:2–3' }));
+    await host.settle();
+  });
+  expect(host.openedReferences.at(-1)).toEqual({ sessionId: first.bridgeSessionId!, referenceId });
+});
+
+test('whole-file and range Markdown links both highlight and dispatch opaque IDs in the same session', async () => {
+  const fileId = `ref_${'c'.repeat(64)}`;
+  const rangeId = `ref_${'d'.repeat(64)}`;
+  host.responseText = `[file.ts](review-file:${fileId}) and [file.ts:2–3](review-file:${rangeId})`;
+  const view = mount();
+  await connected(view);
+  await send(view, 'mixed-file-references');
+  const fileLink = await view.findByRole('link', { name: 'file.ts' });
+  const rangeLink = await view.findByRole('link', { name: 'file.ts:2–3' });
+  expect(fileLink.className).toContain('font-mono');
+  expect(rangeLink.className).toBe(fileLink.className);
+  const state = restoreReviewState(host.savedState);
+  const sessionId = state.sessions.find(({ id }) => id === state.activeSessionId)!.bridgeSessionId!;
+  await act(async () => {
+    fireEvent.click(fileLink);
+    fireEvent.click(rangeLink);
+    await host.settle();
+  });
+  expect(host.openedReferences).toEqual([
+    { sessionId, referenceId: fileId },
+    { sessionId, referenceId: rangeId },
+  ]);
+  expect(host.openedFiles).toEqual([]);
+});
+
+test('reference links preserve legacy URI navigation and leave malformed references inert', async () => {
+  const file = 'file:///workspace/repo/file.ts';
+  host.responseText = `[legacy file](review-file:${encodeURIComponent(file)}) [invalid](review-file:ref_fake) [malformed](review-file:%ZZ)`;
+  const view = mount();
+  await connected(view);
+  await send(view, 'legacy-reference');
+  await view.findByRole('link', { name: 'legacy file' });
+  expect(view.queryByRole('link', { name: 'invalid' })).toBeNull();
+  expect(view.queryByRole('link', { name: 'malformed' })).toBeNull();
+  await act(async () => {
+    fireEvent.click(view.getByRole('link', { name: 'legacy file' }));
+    await host.settle();
+  });
+  expect(host.openedFiles).toEqual([file]);
+  expect(host.openedReferences).toEqual([]);
+});
+
+test('reference navigation errors are displayed without resending a chat turn', async () => {
+  const referenceId = `ref_${'b'.repeat(64)}`;
+  host.responseText = `[file.ts:1](review-file:${referenceId})`;
+  host.referenceError = '代码引用已失效（会话或快照已结束），请重新生成引用。';
+  const view = mount();
+  await connected(view);
+  await send(view, 'expired-reference');
+  await view.findByRole('link', { name: 'file.ts:1' });
+  await act(async () => {
+    fireEvent.click(view.getByRole('link', { name: 'file.ts:1' }));
+    await host.settle();
+  });
+  expect(view.getByRole('alert').textContent).toBe(host.referenceError);
+  expect(host.runs).toHaveLength(1);
+  expect(host.openedFiles).toEqual([]);
 });
 
 test('syntax highlighting preserves code, inline text, unknown languages and Host code actions', async () => {

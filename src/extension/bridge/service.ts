@@ -100,6 +100,10 @@ export class BridgeService implements vscode.Disposable {
       }),
     );
   }
+  async readFileReference(sessionId: string, referenceId: string) {
+    await this.ensureStarted();
+    return this.runtime!.readFileReference(sessionId, referenceId);
+  }
   // Explicit developer command only: export a short-lived *local Bridge*
   // capability for curl, never OAuth tokens. Removed on extension shutdown.
   async exportConnection(): Promise<string> {
