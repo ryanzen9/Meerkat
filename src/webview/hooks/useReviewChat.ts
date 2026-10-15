@@ -166,7 +166,8 @@ export function useReviewChat(connection: {
     messages: session.messages.map(convertMessage),
     transport,
   });
-  const runtime = useAISDKRuntime(chat);
+  // The Bridge accepts text turns; do not offer the SDK's default file uploads.
+  const runtime = useAISDKRuntime(chat, { adapters: { attachments: undefined } });
   const lastMessages = useRef({ sessionId: session.id, messages: chat.messages });
   const saveMessages = useCallback((sessionId: string, transcript: UIMessage[]) => {
     if (!transcript.length) return;

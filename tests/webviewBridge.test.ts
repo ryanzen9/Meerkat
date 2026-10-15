@@ -316,24 +316,75 @@ async function answered(view: View, count: number) {
   await waitFor(() => expect(host.runtime.sessions.list().length).toBeLessThanOrEqual(20));
 }
 
-test('message-pair layout keeps Bridge tool output and copies the full assistant response through Host', async () => {
+test('assistant-ui Thread keeps Bridge tool output and copies the full assistant response through Host', async () => {
   host.includeTool = true;
   const view = mount();
   await connected(view);
   await send(view, 'TODO: inspect this change');
   await answered(view, 1);
-  const user = view.container.querySelector('[data-slot="message-pair-user"]');
-  const assistant = view.container.querySelector('[data-slot="message-pair-assistant"]');
+  const user = view.container.querySelector('[data-slot="aui_user-message-root"]');
+  const assistant = view.container.querySelector('[data-slot="aui_assistant-message-root"]');
   expect(user?.textContent).toContain('TODO: inspect this change');
   expect(assistant?.textContent).toContain('Additional explanation.');
-  expect(assistant?.querySelector('summary')?.textContent).toContain('inspect_text · 已结束');
-  expect(assistant?.querySelector('details')?.textContent).toContain('"todos": 1');
+  fireEvent.click(view.getByRole('button', { name: '1 tool call' }));
+  fireEvent.click(view.getByRole('button', { name: 'Used tool: inspect_text' }));
+  expect(assistant?.querySelector('[data-slot="tool-fallback-result"]')?.textContent).toContain(
+    '"todos": 1',
+  );
   await act(async () => {
     fireEvent.click(view.getByRole('button', { name: '复制回复' }));
     await host.settle();
   });
   expect(host.copiedTexts).toEqual(['answer:model-a:1\nAdditional explanation.']);
   expect(view.getByRole('button', { name: '已复制回复' })).toBeDefined();
+  expect(view.queryByRole('button', { name: 'Edit' })).toBeNull();
+  expect(view.queryByRole('button', { name: 'Refresh' })).toBeNull();
+  expect(view.queryByRole('button', { name: 'Add Attachment' })).toBeNull();
+});
+
+test('Thread composer preserves drafts across tabs, sessions and remounts', async () => {
+  const view = mount();
+  await connected(view);
+  await send(view, 'draft-session');
+  await answered(view, 1);
+  fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
+    target: { value: '检查这个变更的边界情况' },
+  });
+  const first = restoreReviewState(host.savedState).activeSessionId;
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  expect(view.queryByRole('textbox', { name: '询问 Agent' })).toBeNull();
+  fireEvent.click(view.getByRole('tab', { name: 'Agent Chat Windows' }));
+  expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
+    '检查这个变更的边界情况',
+  );
+  fireEvent.click(view.getByRole('button', { name: '新建会话' }));
+  expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe('');
+  fireEvent.click(view.getByRole('tab', { name: 'History' }));
+  fireEvent.click(view.getByRole('button', { name: /draft-session/ }));
+  expect(restoreReviewState(host.savedState).activeSessionId).toBe(first);
+  await act(async () => cleanup());
+  const restored = mount();
+  await connected(restored);
+  expect((restored.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
+    '检查这个变更的边界情况',
+  );
+  expect(host.runs).toHaveLength(1);
+});
+
+test('Thread composer sends with Enter while Shift+Enter and IME keep the draft', async () => {
+  const view = mount();
+  await connected(view);
+  const input = view.getByRole('textbox', { name: '询问 Agent' });
+  fireEvent.change(input, { target: { value: '审查输入边界' } });
+  fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
+  fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+  expect(host.runs).toHaveLength(0);
+  await act(async () => {
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await host.settle();
+  });
+  await answered(view, 1);
+  expect(host.runs[0]!.text).toBe('审查输入边界');
 });
 
 async function streaming(view: View) {
@@ -351,7 +402,7 @@ async function delta(view: View, suffix: string) {
   });
   await waitFor(() =>
     expect(
-      view.container.querySelector('[data-slot="message-pair-assistant"]')?.textContent,
+      view.container.querySelector('[data-slot="aui_assistant-message-root"]')?.textContent,
     ).toContain(suffix),
   );
 }

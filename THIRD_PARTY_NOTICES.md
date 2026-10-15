@@ -1,8 +1,8 @@
 # Third-party notices
 
-## assistant-ui message-pair
+## assistant-ui Thread and elements
 
-The runtime layout in `src/webview/components/assistant-ui/elements/message-pair.tsx` is adapted from the official [message-pair Runtime recipe](https://www.assistant-ui.com/elements/message-pair), from [assistant-ui/assistant-ui](https://github.com/assistant-ui/assistant-ui/tree/d7ba4e673622c3afbf064dc9c33583af81258548). Local adaptations use VS Code theme tokens, existing icons and Markdown rendering, and a keyboard-accessible action row.
+The components under `src/webview/components/assistant-ui/` are installed from the official [assistant-ui registry](https://r.assistant-ui.com/styles/new-york/thread.json) using `npx shadcn@latest add "@assistant-ui/thread"`. Source: [assistant-ui/assistant-ui](https://github.com/assistant-ui/assistant-ui). Local adaptations add VS Code theme tokens and slots for the existing Host clipboard, code actions, and persisted composer drafts.
 
 ```text
 MIT License

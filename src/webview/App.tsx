@@ -1,8 +1,7 @@
-import { AssistantRuntimeProvider, ThreadPrimitive } from '@assistant-ui/react';
+import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { changeCounts } from '../shared/git';
 import { AgentChat, ChatActionsContext } from './components/AgentChat';
 import { FileChanges } from './components/FileChanges';
-import { ReviewComposer } from './components/ReviewComposer';
 import { ReviewContext } from './components/ReviewContext';
 import { ReviewHeader } from './components/ReviewHeader';
 import { ReviewTabs } from './components/ReviewTabs';
@@ -21,7 +20,7 @@ export function App() {
   return (
     <AssistantRuntimeProvider runtime={chat.runtime}>
       <ChatActionsContext.Provider value={panel}>
-        <ThreadPrimitive.Root
+        <div
           className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
           aria-label="Review Bot 面板"
         >
@@ -160,9 +159,12 @@ export function App() {
               tabIndex={0}
             >
               <AgentChat
-                empty={!chat.session.messages.length}
                 authenticated={connection.authenticated}
                 onFiles={() => chat.setTab('files')}
+                sessionId={chat.session.id}
+                draft={chat.session.draft}
+                onDraftChange={chat.setDraft}
+                onNew={chat.newSession}
               />
             </section>
             <section
@@ -197,13 +199,7 @@ export function App() {
               />
             </section>
           </main>
-          <ReviewComposer
-            sessionId={chat.session.id}
-            draft={chat.session.draft}
-            onDraftChange={chat.setDraft}
-            onNew={chat.newSession}
-          />
-        </ThreadPrimitive.Root>
+        </div>
       </ChatActionsContext.Provider>
     </AssistantRuntimeProvider>
   );

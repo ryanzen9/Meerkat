@@ -3,6 +3,9 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "paths": {
+      "@/*": ["./src/webview/*"]
+    },
     "strict": true,
     "noEmit": true,
     "isolatedModules": true,

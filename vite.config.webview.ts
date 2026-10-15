@@ -23,6 +23,9 @@ export default defineConfig(({ mode }) => ({
     tailwindcss(),
   ],
   base: './',
+  resolve: {
+    alias: { '@': fileURLToPath(new URL('./src/webview', import.meta.url)) },
+  },
   // The provider owns HTML, CSP, nonce, and entry resource URIs. A normal browser
   // build emits imported assets as files rather than library-mode data URLs.
   define: {

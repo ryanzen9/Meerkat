@@ -1,11 +1,11 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
-import { MessagePrimitive, ThreadPrimitive, useAuiState } from '@assistant-ui/react';
-import type { ToolCallMessagePartProps } from '@assistant-ui/react';
+import { ActionBarPrimitive, useAuiState } from '@assistant-ui/react';
 import { MarkdownTextPrimitive, useIsMarkdownCodeBlock } from '@assistant-ui/react-markdown';
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
 import { Icon } from './Icon';
-import { MessagePairAssistant, MessagePairUser } from './assistant-ui/elements/message-pair';
+import { Thread, type ThreadComponents } from './assistant-ui/elements/thread.aui';
+import { ReviewComposerContext, ReviewComposerInput, ReviewComposerFooter } from './ReviewComposer';
 
 interface ChatActions {
   openFile(uri: string): Promise<unknown>;
@@ -172,82 +172,75 @@ function CopyResponse() {
   );
 }
 
-function AssistantMessage() {
+const WelcomeContext = createContext({ authenticated: false, onFiles: () => {} });
+
+function ReviewWelcome() {
+  const { authenticated, onFiles } = useContext(WelcomeContext);
   return (
-    <MessagePairAssistant actions={<CopyResponse />}>
-      <MessagePrimitive.Parts components={{ Text: MarkdownText, tools: { Fallback: ToolCall } }} />
-    </MessagePairAssistant>
+    <div className="aui-thread-welcome-root mb-6 flex flex-col items-start px-2">
+      <span className="mb-4 flex size-10 items-center justify-center rounded-xl border border-widget bg-surface text-link">
+        <Icon name="review" className="size-6" />
+      </span>
+      <h2 className="mb-2 text-[1.15rem] font-semibold">从变更开始对话</h2>
+      <p className="mb-4 max-w-80 text-[0.9rem] leading-relaxed text-muted">
+        查看工作区中的文件变更，记录你想让 Agent 审查的问题。
+      </p>
+      <button
+        type="button"
+        onClick={onFiles}
+        className="flex items-center gap-2 rounded-md border border-widget bg-surface px-3 py-2 text-[0.85rem] hover:bg-hover"
+      >
+        <Icon name="file" className="size-3.5" />
+        查看文件变更
+        <Icon name="chevron" className="size-3" />
+      </button>
+      <p className="mt-5 text-[0.8rem] text-muted">
+        {authenticated
+          ? 'ChatGPT 已连接。仅发送你输入的内容。'
+          : 'Continue with ChatGPT 后开始对话。'}
+      </p>
+    </div>
   );
 }
 
-function ToolCall({ toolName, argsText, result, status }: ToolCallMessagePartProps) {
+function ReviewAssistantActionBar() {
   return (
-    <details className="my-2 rounded-sm border border-widget p-2 text-[0.8rem]">
-      <summary className="cursor-pointer text-muted">
-        {toolName} · {status.type === 'running' ? '运行中' : '已结束'}
-      </summary>
-      <pre className="mt-2 max-h-40 overflow-auto wrap-anywhere whitespace-pre-wrap">
-        {argsText}
-      </pre>
-      {result !== undefined && (
-        <pre className="mt-2 max-h-40 overflow-auto wrap-anywhere whitespace-pre-wrap">
-          {typeof result === 'string' ? result : JSON.stringify(result, null, 2)}
-        </pre>
-      )}
-    </details>
+    <ActionBarPrimitive.Root hideWhenRunning autohide="never">
+      <CopyResponse />
+    </ActionBarPrimitive.Root>
   );
 }
 
-function UserMessage() {
-  return (
-    <MessagePairUser>
-      <MessagePrimitive.Parts components={{ Text: MarkdownText }} />
-    </MessagePairUser>
-  );
-}
+// The Host stores an append-only conversation, so editing and regeneration
+// are not exposed until the Bridge supports replacing the remote history.
+const THREAD_COMPONENTS: ThreadComponents = {
+  Welcome: ReviewWelcome,
+  Text: MarkdownText,
+  ComposerInput: ReviewComposerInput,
+  ComposerFooter: ReviewComposerFooter,
+  AssistantActionBar: ReviewAssistantActionBar,
+  UserActionBar: () => null,
+  // App renders connection and run failures in its shared alert banner.
+  MessageError: () => null,
+};
 
 export function AgentChat({
-  empty,
-  onFiles,
   authenticated,
+  onFiles,
+  ...composer
 }: {
-  empty: boolean;
-  onFiles(): void;
   authenticated: boolean;
+  onFiles(): void;
+  sessionId: string;
+  draft: string;
+  onDraftChange(draft: string): void;
+  onNew(): void;
 }) {
   return (
-    <ThreadPrimitive.Viewport
-      className="h-full min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain p-3"
-      role="log"
-      aria-label="Agent 对话"
-      aria-live="polite"
-    >
-      {empty && (
-        <div className="flex min-h-full flex-col items-start justify-center px-1 py-6">
-          <span className="mb-4 flex size-10 items-center justify-center rounded-lg border border-widget bg-surface text-link">
-            <Icon name="review" className="size-6" />
-          </span>
-          <h2 className="mb-2 text-[1.15rem] font-semibold">从变更开始对话</h2>
-          <p className="mb-4 max-w-80 text-[0.9rem] leading-relaxed text-muted">
-            查看工作区中的文件变更，记录你想让 Agent 审查的问题。
-          </p>
-          <button
-            type="button"
-            onClick={onFiles}
-            className="flex items-center gap-2 rounded-md border border-widget bg-surface px-3 py-2 text-[0.85rem] hover:bg-hover"
-          >
-            <Icon name="file" className="size-3.5" />
-            查看文件变更
-            <Icon name="chevron" className="size-3" />
-          </button>
-          <p className="mt-5 text-[0.8rem] text-muted">
-            {authenticated
-              ? 'ChatGPT 已连接。仅发送你输入的内容。'
-              : 'Continue with ChatGPT 后开始对话。'}
-          </p>
-        </div>
-      )}
-      <ThreadPrimitive.Messages components={{ AssistantMessage, UserMessage }} />
-    </ThreadPrimitive.Viewport>
+    <WelcomeContext.Provider value={{ authenticated, onFiles }}>
+      <ReviewComposerContext.Provider value={composer}>
+        <Thread components={THREAD_COMPONENTS} autoFocus={false} />
+      </ReviewComposerContext.Provider>
+    </WelcomeContext.Provider>
   );
 }
