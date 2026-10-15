@@ -56,6 +56,9 @@ export function ReviewComposer({
         >
           <Icon name="send" />
         </ComposerPrimitive.Send>
+        <ComposerPrimitive.Cancel aria-label="取消运行" className="rounded-sm px-2 py-1 text-error">
+          停止
+        </ComposerPrimitive.Cancel>
       </ComposerPrimitive.Root>
       <div className="mt-1.5 flex min-w-0 items-center justify-between gap-2 text-[0.7rem] text-muted">
         <span id="composer-hint" className="truncate">

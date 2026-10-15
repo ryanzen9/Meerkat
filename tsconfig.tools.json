@@ -1,5 +1,9 @@
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "lib": ["ES2023", "DOM"], "types": ["bun", "node", "vscode"] },
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "types": ["bun", "node", "vscode"],
+    "jsx": "react-jsx"
+  },
   "include": ["scripts", "tests", "vite.config.*.ts"]
 }

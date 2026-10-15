@@ -9,10 +9,12 @@ import { ReviewTabs } from './components/ReviewTabs';
 import { SessionHistory } from './components/SessionHistory';
 import { usePanel } from './hooks/usePanel';
 import { useReviewChat } from './hooks/useReviewChat';
+import { useAgentConnection } from './hooks/useAgentConnection';
 
 export function App() {
   const panel = usePanel();
-  const chat = useReviewChat();
+  const connection = useAgentConnection();
+  const chat = useReviewChat(connection);
   const repositories = panel.snapshot?.git.repositories ?? [];
   const repository =
     repositories.find(({ rootUri }) => rootUri === chat.repositoryUri) ?? repositories[0];
@@ -45,6 +47,89 @@ export function App() {
             onRepositoryChange={chat.selectRepository}
           />
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-widget px-3 py-2 text-[0.8rem]">
+              {connection.authenticated ? (
+                <>
+                  <span className="max-w-40 truncate" title={connection.activeAccountId}>
+                    {connection.accounts.find((a) => a.id === connection.activeAccountId)?.email ??
+                      'ChatGPT'}
+                  </span>
+                  <select
+                    aria-label="选择 AI 模型"
+                    className="min-w-0 flex-1 bg-input text-input-foreground"
+                    value={chat.model}
+                    disabled={chat.isRunning}
+                    onChange={(event) => {
+                      connection.setModel(event.target.value);
+                      chat.newSession();
+                    }}
+                  >
+                    {chat.model && !chat.modelAvailable && (
+                      <option value={chat.model} disabled>
+                        {chat.model}（当前账户不可用）
+                      </option>
+                    )}
+                    {connection.models.map((model) => (
+                      <option key={model.id} value={model.id}>
+                        {model.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="text-link"
+                    onClick={() => {
+                      void connection.logout();
+                    }}
+                  >
+                    登出
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="rounded-sm bg-button px-2 py-1 text-button-foreground"
+                  disabled={connection.waiting}
+                  onClick={() => {
+                    void connection.login(connection.accounts[0]?.id);
+                  }}
+                >
+                  {connection.waiting ? '等待浏览器授权…' : 'Continue with ChatGPT'}
+                </button>
+              )}
+              <button
+                type="button"
+                className="text-link"
+                disabled={chat.isRunning || connection.waiting}
+                onClick={() => {
+                  void connection.login();
+                  chat.newSession();
+                }}
+              >
+                添加账户
+              </button>
+              {connection.accounts.length > 1 && (
+                <select
+                  aria-label="切换 ChatGPT 账户"
+                  value={connection.activeAccountId ?? ''}
+                  disabled={chat.isRunning}
+                  className="min-w-0 bg-input text-input-foreground"
+                  onChange={(event) => {
+                    void connection.login(event.target.value);
+                    chat.newSession();
+                  }}
+                >
+                  <option value="" disabled>
+                    选择账户
+                  </option>
+                  {connection.accounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.email ?? account.subject} · {account.id.slice(0, 8)}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
             <ReviewTabs
               activeTab={chat.activeTab}
               fileCount={changeCounts(repository).total}
@@ -58,6 +143,14 @@ export function App() {
                 {panel.error}
               </p>
             )}
+            {(connection.error || chat.error) && (
+              <p
+                role="alert"
+                className="shrink-0 border-b border-error/30 px-3 py-2 text-[0.85rem] text-error"
+              >
+                {connection.error || chat.error}
+              </p>
+            )}
             <section
               id="panel-chat"
               role="tabpanel"
@@ -68,6 +161,7 @@ export function App() {
             >
               <AgentChat
                 empty={!chat.session.messages.length}
+                authenticated={connection.authenticated}
                 onFiles={() => chat.setTab('files')}
               />
             </section>

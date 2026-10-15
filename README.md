@@ -73,7 +73,7 @@ F5 结束后，开发任务可能继续监听；可通过 `Tasks: Terminate Task
 └── vite.config.webview.ts   # Vite 浏览器构建，React / Tailwind
 ```
 
-单仓库单份依赖。Bun 负责依赖管理、脚本执行和开发构建编排，Host 与 Webview 都由 Vite 8 打包。Host 使用 Library Mode，目标为 Node 20 语法，`vscode` 与所有 Node 内置模块设为 external；当前 Host 没有额外的 npm 运行时依赖。Webview 使用普通浏览器构建，React 完全打包，构建时禁止导入 Node、Bun 或 VS Code API。`package.json` 的 `type: module` 用于工程配置和脚本，Host 入口明确使用 `.cjs`。
+单仓库单份依赖。Bun 负责依赖管理、脚本执行和开发构建编排，Host 与 Webview 都由 Vite 8 打包。Host 使用 Library Mode，目标为 Node 20 语法，`vscode` 与所有 Node 内置模块设为 external；Host 的官方 Agents SDK、OpenAI Client 与 OAuth 依赖全部打包为本地 CommonJS chunks。Webview 使用普通浏览器构建，React 完全打包，构建时禁止导入 Node、Bun 或 VS Code API。`package.json` 的 `type: module` 用于工程配置和脚本，Host 入口明确使用 `.cjs`。
 
 HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview/main.js` 和 `style.css`，无需第二套 HTML 模板。图片、字体等静态资源使用源码中的 `import`、`new URL(..., import.meta.url)` 或 CSS `url()` 引用，Vite 输出到 `assets/` 并生成相对资源路径；不要使用网站根路径 `/image.png`。资源不内联为 data URL，保持现有 CSP。动态 JS chunk 输出到 `chunks/`；VSIX 包含这些目录中的实际文件。两个构建都禁用默认 public 目录复制，避免混入无关资源。
 
@@ -83,12 +83,12 @@ HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview
 
 面板采用全高布局：44px Header、72px Context / Status、40px 标签栏、可滚动内容和约 87–99px 的底部输入区。输入支持 Enter 发送、Shift+Enter 换行，以及中文输入法；多行内容在 36–48px 内自适应增长，超出后在输入框内滚动。滚动内容和长代码块不会移动 Header 或输入区，也不会撑宽侧栏。
 
-- **Chat**（默认）：基于 `assistant-ui` 的 `AssistantRuntimeProvider`、ExternalStoreRuntime 和 Thread primitives；消息布局采用官方 `elements-message-pair` 的 Runtime 方案：用户消息为右侧圆角气泡，助手回复为无气泡正文，悬停或键盘聚焦显示回复复制按钮。通过 Extension Host 复制完整回复；当前不提供重生成或模拟流式动画。消息支持安全 Markdown、可横向滚动的代码块、复制和在编辑器打开代码。文件引用采用 `[文件名](review-file:编码后的文件URI)`，点击后由 Host 检查工作区范围再打开。
+- **Chat**（默认）：基于 `assistant-ui` 的 `AssistantRuntimeProvider`、AI SDK Runtime、Host Stream 代理和 Thread primitives；消息布局采用官方 `elements-message-pair` 的 Runtime 方案：用户消息为右侧圆角气泡，助手回复为无气泡正文，悬停或键盘聚焦显示回复复制按钮。通过 Extension Host 复制完整回复；支持真实流式文本及工具调用显示，当前不提供重生成。消息支持安全 Markdown、可横向滚动的代码块、复制和在编辑器打开代码。文件引用采用 `[文件名](review-file:编码后的文件URI)`，点击后由 Host 检查工作区范围再打开。
 - **Files**：按 Changes / Staged Changes 显示当前仓库未暂存、已暂存的真实 Git 变更，包含未跟踪文件和冲突。新增 / 修改（含重命名）/ 删除使用 Git 主题颜色及 A / M / R / D / U 字符区分。仓库、分支、暂存或工作树变化会自动同步；多仓库可在上下文区切换。顶部数量按文件 URI 去重，避免重复计算部分暂存的文件。
 - **History**：恢复已有会话并回到 Chat；输入区的加号新建会话。草稿、选中标签、仓库和最近 20 个会话（每个最多 100 条消息）通过 VS Code Webview state 保存，输入上限 4000 字符。
 - **更多操作**：打开扩展设置、会话历史或将当前会话作为未保存的 Markdown 文档打开，可自行保存导出。
 
-**当前阶段尚未接入 AI 模型或 PR 服务。** 发送问题会保存用户消息，并显示模型尚未配置的提示。刷新读取工作区状态；不会生成模拟审查结果。`useReviewChat` 的 `onNew` 是后续模型接入点。可选 `PanelSnapshot.review` 元数据支持 PR 编号和 Idle / Analyzing… / Issues / Ready 徽章，仅对匹配的仓库显示；没有该元数据时使用真实工作区名和 Idle 状态。
+**已接入 ChatGPT OAuth 与 OpenAI Agents SDK。** 点击 Continue with ChatGPT 完成动态注册，选择账户可用模型后发送消息，支持真实流式文本、本地 Function Tool、多轮会话和停止运行。webview 通过 Host 代理消费官方 AI SDK UI Message Stream，不持有 Provider 或本地 HTTP 凭据。PR 服务仍未接入。完整架构、HTTP API、首次授权与真实账户验收见 [Agent Bridge 文档](docs/agent-bridge.md)。Host 重启后须新建 Agent 会话；现有 webview 历史保留文字摘要。可选 `PanelSnapshot.review` 元数据支持 PR 编号和 Idle / Analyzing… / Issues / Ready 徽章，仅对匹配的仓库显示；没有该元数据时使用真实工作区名和 Idle 状态。
 
 ## 消息协议
 
@@ -159,7 +159,7 @@ code --install-extension artifacts/vscode-review-bot-0.1.0.vsix
 2. 展开 Source Control 中的 Review Bot，检查固定布局、Git 变更、刷新、聊天与历史；折叠再展开，确认草稿与会话保持，原生 Changes / Graph 继续可用。
 3. 修改 React / CSS，等待 `[watch] ready` 后点击 **Reload Webview**；修改 Host 后重启调试会话。检查控制台没有资源 404、CSP 或模块加载错误。
 4. 切换深色、浅色及高对比主题，检查窄侧栏布局、输入框、按钮和焦点样式。
-5. 结束 `dev`，运行 `bun run package` 并安装 VSIX；关闭构建终端，在普通 VS Code 窗口重复上述功能检查。安装后无需 Bun、Vite 或 HTTP Server。
+5. 结束 `dev`，运行 `bun run package` 并安装 VSIX；关闭构建终端，在普通 VS Code 窗口重复上述功能检查。安装后无需 Bun 或 Vite；Agent Bridge 的 loopback HTTP 服务由扩展自身管理。
 
 自动测试在临时项目副本中检查构建与监听，不代替实际 VS Code UI、Remote 场景和最低支持版本验证。
 

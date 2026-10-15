@@ -5,4 +5,6 @@
 !THIRD_PARTY_NOTICES.md
 !CHANGELOG.md
 !dist/extension/**/*.cjs
+!dist/extension/THIRD_PARTY_LICENSES.md
+!docs/agent-bridge.md
 !dist/webview/**/!(*.map)

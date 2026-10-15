@@ -21,6 +21,7 @@
       "files": [
         "src/extension/providers/ReviewPanelProvider.ts",
         "src/webview/services/vscode.ts",
+        "src/webview/services/bridgeFetch.ts",
         "src/webview/hooks/usePanel.ts"
       ],
       "rules": { "unicorn/require-post-message-target-origin": "off" }

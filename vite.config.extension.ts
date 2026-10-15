@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => ({
     target: 'node20',
     sourcemap: mode === 'development',
     minify: false,
+    license: { fileName: 'THIRD_PARTY_LICENSES.md' },
     lib: {
       entry: fileURLToPath(new URL('./src/extension/index.ts', import.meta.url)),
       formats: ['cjs'],

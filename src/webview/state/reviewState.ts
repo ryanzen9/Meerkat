@@ -6,6 +6,7 @@ export interface ReviewState {
   repositoryUri: string;
   activeSessionId: string;
   sessions: ChatSession[];
+  pendingBridgeSessionDeletes: string[];
 }
 
 export function createSession(): ChatSession {
@@ -42,6 +43,12 @@ function isSession(value: unknown): value is ChatSession {
     typeof value.updatedAt === 'string' &&
     Number.isFinite(Date.parse(value.updatedAt)) &&
     typeof value.draft === 'string' &&
+    (value.bridgeSessionId === undefined ||
+      (typeof value.bridgeSessionId === 'string' &&
+        /^[\w-]{1,128}$/.test(value.bridgeSessionId))) &&
+    (value.model === undefined || (typeof value.model === 'string' && value.model.length <= 128)) &&
+    (value.accountId === undefined ||
+      (typeof value.accountId === 'string' && /^[\w-]{1,128}$/.test(value.accountId))) &&
     Array.isArray(value.messages) &&
     value.messages.every(isChatMessage) &&
     new Set(value.messages.map(({ id }) => id)).size === value.messages.length
@@ -51,14 +58,13 @@ function isSession(value: unknown): value is ChatSession {
 export function restoreReviewState(saved: unknown): ReviewState {
   const data: WebviewState = isRecord(saved) ? saved : {};
   const valid = Array.isArray(data.sessions) ? data.sessions.filter(isSession) : [];
-  const sessions = [...new Map(valid.map((session) => [session.id, session])).values()]
-    .slice(-20)
-    .map((session) => ({
-      ...session,
-      title: session.title.slice(0, 80),
-      draft: session.draft.slice(0, 4000),
-      messages: session.messages.slice(-100),
-    }));
+  const allSessions = [...new Map(valid.map((session) => [session.id, session])).values()];
+  const sessions = allSessions.slice(-20).map((session) => ({
+    ...session,
+    title: session.title.slice(0, 80),
+    draft: session.draft.slice(0, 4000),
+    messages: session.messages.slice(-100),
+  }));
   if (!sessions.length) sessions.push(createSession());
   const activeSessionId = sessions.some(({ id }) => id === data.activeSessionId)
     ? data.activeSessionId!
@@ -68,6 +74,51 @@ export function restoreReviewState(saved: unknown): ReviewState {
     repositoryUri: typeof data.repositoryUri === 'string' ? data.repositoryUri : '',
     activeSessionId,
     sessions,
+    pendingBridgeSessionDeletes: pendingDeletions(
+      Array.isArray(data.pendingBridgeSessionDeletes)
+        ? data.pendingBridgeSessionDeletes
+            .filter(
+              (id: unknown): id is string => typeof id === 'string' && /^[\w-]{1,128}$/.test(id),
+            )
+            .slice(-1000)
+        : [],
+      allSessions.slice(0, -20),
+      sessions,
+    ),
+  };
+}
+
+function pendingDeletions(
+  previous: string[],
+  removed: ChatSession[],
+  retained: ChatSession[],
+): string[] {
+  const active = new Set(retained.map((session) => session.bridgeSessionId));
+  return [
+    ...new Set([
+      ...previous,
+      ...removed.flatMap((session) => (session.bridgeSessionId ? [session.bridgeSessionId] : [])),
+    ]),
+  ].filter((id) => !active.has(id));
+}
+
+export function startNewReviewSession(state: ReviewState): ReviewState {
+  const empty = state.sessions.find(
+    ({ messages, draft, bridgeSessionId }) => !messages.length && !draft && !bridgeSessionId,
+  );
+  const next = empty ?? createSession();
+  const candidates = empty ? state.sessions : [...state.sessions, next];
+  const sessions = candidates.slice(-20);
+  return {
+    ...state,
+    activeTab: 'chat',
+    activeSessionId: next.id,
+    sessions,
+    pendingBridgeSessionDeletes: pendingDeletions(
+      state.pendingBridgeSessionDeletes,
+      candidates.slice(0, -20),
+      sessions,
+    ),
   };
 }
 

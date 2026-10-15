@@ -65,6 +65,7 @@ export interface WebviewState {
   repositoryUri?: string;
   activeSessionId?: string;
   sessions?: ChatSession[];
+  pendingBridgeSessionDeletes?: string[];
 }
 
 export type ReviewTab = 'chat' | 'files' | 'history';
@@ -83,4 +84,7 @@ export interface ChatSession {
   updatedAt: string;
   draft: string;
   messages: ChatMessage[];
+  bridgeSessionId?: string;
+  model?: string;
+  accountId?: string;
 }

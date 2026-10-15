@@ -29,5 +29,7 @@ export function panelReducer(
           ? { ...state.snapshot, state: { messageCount: message.messageCount } }
           : null,
       };
+    default:
+      return state;
   }
 }

@@ -4,10 +4,15 @@ import { WorkspaceService } from './services/WorkspaceService';
 import { SettingsService } from './services/SettingsService';
 import { StateService } from './services/StateService';
 import { GitService } from './services/GitService';
+import { BridgeService } from './bridge/service';
+import { publicError } from './bridge/errors';
+
+let bridge: BridgeService | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Review Bot', { log: true });
   const git = new GitService(output);
+  bridge = new BridgeService(context, output);
   const provider = new ReviewPanelProvider(
     context.extensionUri,
     {
@@ -15,6 +20,7 @@ export function activate(context: vscode.ExtensionContext): void {
       settings: new SettingsService(),
       state: new StateService(context.workspaceState),
       git,
+      bridge,
     },
     output,
   );
@@ -22,6 +28,38 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     output,
     git,
+    bridge,
+    vscode.commands.registerCommand('reviewBot.chatgptSignIn', async () => {
+      try {
+        const response = await bridge!.request(
+          '/v1/providers/openai-agents/auth',
+          'GET',
+          undefined,
+          new AbortController().signal,
+        );
+        const status = (await response.json()) as { accounts?: { id: string }[] };
+        const result = await bridge!.request(
+          '/v1/providers/openai-agents/login',
+          'POST',
+          JSON.stringify(status.accounts?.[0] ? { accountId: status.accounts[0].id } : {}),
+          new AbortController().signal,
+        );
+        if (!result.ok)
+          void vscode.window.showErrorMessage(
+            ((await result.json()) as { error: { message: string } }).error.message,
+          );
+      } catch (error) {
+        void vscode.window.showErrorMessage(publicError(error).message);
+      }
+    }),
+    vscode.commands.registerCommand('reviewBot.bridgeConnection', async () => {
+      try {
+        const path = await bridge!.exportConnection();
+        void vscode.window.showInformationMessage(`Bridge connection saved to ${path}`);
+      } catch (error) {
+        void vscode.window.showErrorMessage(publicError(error).message);
+      }
+    }),
     git.onDidChange(() => {
       void provider.refresh();
     }),
@@ -48,4 +86,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 // All listeners, commands, and the view provider are owned by context.subscriptions.
-export function deactivate(): void {}
+export async function deactivate(): Promise<void> {
+  await bridge?.close();
+  bridge = undefined;
+}
