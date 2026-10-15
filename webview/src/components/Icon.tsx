@@ -3,7 +3,19 @@ import type { ReactNode } from 'react';
 const paths = {
   review: (
     <>
-      <path d="m6 7-4 5 4 5m12-10 4 5-4 5M14 4l-4 16" />
+      <path d="M3 15V7.2A3 3 0 0 1 8.1 5.1l2.1 2.1a2.4 2.4 0 0 0 3.6 0l2.1-2.1A3 3 0 0 1 21 7.2V15a4.8 4.8 0 0 1-4.8 4.8H7.8A4.8 4.8 0 0 1 3 15Z" />
+      <rect x="6.3" y="9.6" width="3" height="5.4" rx="1.5" fill="currentColor" stroke="none" />
+      <rect x="14.7" y="9.6" width="3" height="5.4" rx="1.5" fill="currentColor" stroke="none" />
+      <rect
+        x="10.2"
+        y="15.6"
+        width="3.6"
+        height="1.8"
+        rx="0.9"
+        fill="currentColor"
+        stroke="none"
+        opacity="0.4"
+      />
     </>
   ),
   refresh: (
