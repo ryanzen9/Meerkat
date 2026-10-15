@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { bridgeJson } from '../services/bridgeApi';
+import type { AgentModel } from '../../shared/agentModels';
 
 interface Account {
   id: string;
@@ -14,13 +15,9 @@ interface Status {
   signInError?: string;
   accounts: Account[];
 }
-interface Model {
-  id: string;
-  name: string;
-}
 export function useAgentConnection() {
   const [status, setStatus] = useState<Status>({ authenticated: false, accounts: [] });
-  const [models, setModels] = useState<Model[]>([]);
+  const [models, setModels] = useState<AgentModel[]>([]);
   const [model, setModel] = useState('');
   const [error, setError] = useState('');
   const [waiting, setWaiting] = useState(false);
@@ -50,7 +47,7 @@ export function useAgentConnection() {
         setModel('');
       }
       try {
-        const catalog = await bridgeJson<Model[]>('/v1/providers/openai-agents/models');
+        const catalog = await bridgeJson<AgentModel[]>('/v1/providers/openai-agents/models');
         setModels(catalog);
         setModel((current) =>
           next.activeAccountId === previousAccount.current && catalog.some((m) => m.id === current)

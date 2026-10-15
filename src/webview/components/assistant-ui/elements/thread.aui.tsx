@@ -98,6 +98,7 @@ export type ThreadComponents = {
   UserActionBar?: ComponentType | undefined;
   ComposerInput?: ComponentType<{ autoFocus: boolean }> | undefined;
   ComposerFooter?: ComponentType | undefined;
+  ComposerLeading?: ComponentType | undefined;
   MessageError?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
   ToolGroup?: ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>> | undefined;
@@ -498,6 +499,7 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
 };
 
 const ComposerAction: FC = () => {
+  const { ComposerLeading } = useContext(ThreadComponentsContext);
   // The stop control only cancels the send while no run it could stop is going.
   const isSending = useAuiState(
     (s) =>
@@ -506,6 +508,7 @@ const ComposerAction: FC = () => {
 
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
+      {ComposerLeading && <ComposerLeading />}
       <AuiIf condition={(s) => s.thread.capabilities.attachments}>
         <ComposerAddAttachment />
       </AuiIf>

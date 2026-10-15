@@ -1,15 +1,83 @@
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react';
-import { createContext, useContext, useEffect } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { Icon } from './Icon';
+import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
 
-interface ReviewComposerState {
+import { isReasoningEffort, type AgentModel, type ReasoningEffort } from '../../shared/agentModels';
+
+export interface ReviewComposerState {
   sessionId: string;
   draft: string;
   onDraftChange(draft: string): void;
   onNew(): void;
+  models: readonly AgentModel[];
+  reasoningEffort: ReasoningEffort | undefined;
+  onReasoningEffortChange(effort: ReasoningEffort): void;
+  model: string;
+  modelDisabled: boolean;
+  onModelChange(model: string): void;
 }
 
 export const ReviewComposerContext = createContext<ReviewComposerState | null>(null);
+
+const EFFORT_LABELS: Record<ReasoningEffort, string> = {
+  none: 'Off',
+  minimal: 'Min',
+  low: 'Low',
+  medium: 'Med',
+  high: 'High',
+  xhigh: 'XHigh',
+  max: 'Max',
+};
+
+export function ReviewModelSelector() {
+  const { models, model, modelDisabled, onModelChange, reasoningEffort, onReasoningEffortChange } =
+    useContext(ReviewComposerContext)!;
+  const [open, setOpen] = useState(false);
+  const options = useMemo(() => {
+    const available: ModelOption[] = models.map((item) => ({
+      id: item.id,
+      name: item.name,
+      efforts: item.supportedReasoningEfforts.map((option) => ({
+        id: option.reasoningEffort,
+        name: EFFORT_LABELS[option.reasoningEffort],
+      })),
+    }));
+    return model && !models.some(({ id }) => id === model)
+      ? [{ id: model, name: `${model}（当前账户不可用）`, disabled: true }, ...available]
+      : available;
+  }, [models, model]);
+  return (
+    <ModelSelector
+      models={options}
+      value={model}
+      effort={reasoningEffort ?? ''}
+      onEffortChange={(value) => {
+        if (
+          !modelDisabled &&
+          isReasoningEffort(value) &&
+          models
+            .find(({ id }) => id === model)
+            ?.supportedReasoningEfforts.some((option) => option.reasoningEffort === value)
+        )
+          onReasoningEffortChange(value);
+      }}
+      open={!modelDisabled && open}
+      onOpenChange={setOpen}
+      onValueChange={(value) => {
+        if (!modelDisabled && value !== model && models.some(({ id }) => id === value))
+          onModelChange(value);
+      }}
+      disabled={modelDisabled || !models.length}
+      aria-label="选择 AI 模型"
+      searchable
+      variant="ghost"
+      size="sm"
+      className="w-fit max-w-[65%] min-w-0 flex-initial justify-start px-2 text-muted-foreground"
+      contentClassName="max-w-[calc(100vw-1.5rem)] border-widget"
+    />
+  );
+}
 
 export function ReviewComposerInput({ autoFocus }: { autoFocus: boolean }) {
   const { sessionId, draft, onDraftChange } = useContext(ReviewComposerContext)!;

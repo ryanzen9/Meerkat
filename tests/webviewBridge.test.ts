@@ -14,6 +14,7 @@ import { WebviewBridgeProxy } from '../src/extension/bridge/transport/webviewPro
 import { BridgeError } from '../src/extension/bridge/errors';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../src/shared/protocol';
 import { createSession, appendTurn, restoreReviewState } from '../src/webview/state/reviewState';
+import type { AgentModel, ReasoningEffort } from '../src/shared/agentModels';
 
 // The production App, React hooks, AI SDK, IPC proxy, routes, Runtime and SessionStore
 // run unchanged. Only the remote provider/browser/VS Code shell are test fixtures.
@@ -24,21 +25,31 @@ class TestHost {
     signInPending: false,
     accounts: [{ id: 'account-a', subject: 'subject-a', signedIn: true }],
   };
-  models = [
-    { id: 'model-a', name: 'Model A' },
-    { id: 'model-b', name: 'Model B' },
+  models: AgentModel[] = [
+    {
+      id: 'model-a',
+      name: 'Model A',
+      supportedReasoningEfforts: [
+        { reasoningEffort: 'low', description: 'Fast' },
+        { reasoningEffort: 'high', description: 'Thorough' },
+      ],
+      defaultReasoningEffort: 'low',
+    },
+    { id: 'model-b', name: 'Model B', supportedReasoningEfforts: [] },
   ];
   modelFailure = false;
   includeTool = false;
+  responseText?: string;
   deleteFailures = 0;
   copiedTexts: string[] = [];
+  openedCode: { code: string; language: string }[] = [];
   savedState: unknown;
   savedWrites = 0;
   holdStream = false;
   streamOutput?: ReadableStreamDefaultController<UIMessageChunk>;
   streamId = '';
   creations: ProviderSession[] = [];
-  runs: { model: string; text: string }[] = [];
+  runs: { model: string; text: string; reasoningEffort?: ReasoningEffort }[] = [];
   deletes: string[] = [];
   operations = new Set<Promise<void>>();
   runtime: BridgeRuntime;
@@ -80,14 +91,22 @@ class TestHost {
         this.creations.push(session);
         return session;
       },
-      run: async (session, text, signal) => {
+      run: async (session, text, signal, reasoningEffort) => {
         signal.throwIfAborted();
-        this.runs.push({ model: session.model, text });
+        this.runs.push({
+          model: session.model,
+          text,
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+        });
         const id = randomUUID();
         const chunks: UIMessageChunk[] = [
           { type: 'start', messageId: id },
           { type: 'text-start', id },
-          { type: 'text-delta', id, delta: `answer:${session.model}:${this.runs.length}` },
+          {
+            type: 'text-delta',
+            id,
+            delta: this.responseText ?? `answer:${session.model}:${this.runs.length}`,
+          },
           { type: 'text-end', id },
           { type: 'finish', finishReason: 'stop' },
         ];
@@ -180,6 +199,10 @@ class TestHost {
         this.copiedTexts.push(message.text);
         this.post({ type: 'host/action', requestId: message.requestId });
         break;
+      case 'code/open':
+        this.openedCode.push({ code: message.code, language: message.language });
+        this.post({ type: 'host/action', requestId: message.requestId });
+        break;
       case 'webview/ready':
         this.post({
           type: 'host/snapshot',
@@ -240,6 +263,7 @@ beforeAll(async () => {
     'SVGElement',
     'Element',
     'Node',
+    'NodeFilter',
     'Text',
     'Document',
     'DocumentFragment',
@@ -289,8 +313,50 @@ afterAll(async () => {
 const mount = () => render(createElement(StrictMode, null, createElement(App)));
 type View = ReturnType<typeof mount>;
 async function connected(view: View) {
-  await waitFor(() => expect(view.getByRole('option', { name: 'Model A' })).toBeDefined());
+  await waitFor(() =>
+    expect(
+      (view.getByRole('combobox', { name: '选择 AI 模型' }) as HTMLButtonElement).disabled,
+    ).toBe(false),
+  );
 }
+async function chooseModel(view: View, name: string) {
+  fireEvent.click(view.getByRole('combobox', { name: '选择 AI 模型' }));
+  fireEvent.click(await view.findByRole('option', { name }));
+}
+
+test('Thinking uses returned efforts and defaults, persists per session, and reaches each turn', async () => {
+  const view = mount();
+  await connected(view);
+  await send(view, 'first effort');
+  await answered(view, 1);
+  expect(host.runs[0]!.reasoningEffort).toBe('low');
+  const original = restoreReviewState(host.savedState).activeSessionId;
+  fireEvent.click(view.getByRole('combobox', { name: '选择 AI 模型' }));
+  expect(view.getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Low', 'High']);
+  expect(view.getByRole('radiogroup', { name: 'Thinking' })).toBeDefined();
+  fireEvent.click(view.getByRole('radio', { name: 'High' }));
+  fireEvent.keyDown(view.getByRole('dialog'), { key: 'Escape' });
+  expect(restoreReviewState(host.savedState).activeSessionId).toBe(original);
+  await send(view, 'deeper follow-up');
+  await answered(view, 2);
+  expect(host.runs[1]!.reasoningEffort).toBe('high');
+  expect(host.creations).toHaveLength(1);
+  await act(async () => cleanup());
+  const restored = mount();
+  await connected(restored);
+  expect(restored.getByRole('combobox', { name: '选择 AI 模型' }).textContent).toContain('High');
+  await chooseModel(restored, 'Model B');
+  fireEvent.click(restored.getByRole('combobox', { name: '选择 AI 模型' }));
+  expect(restored.queryByRole('radiogroup', { name: 'Thinking' })).toBeNull();
+  fireEvent.keyDown(restored.getByRole('dialog'), { key: 'Escape' });
+  await send(restored, 'without effort');
+  await answered(restored, 3);
+  expect(host.runs[2]!.reasoningEffort).toBeUndefined();
+  expect(host.creations).toHaveLength(2);
+  expect(
+    restoreReviewState(host.savedState).sessions.find(({ id }) => id === original)!.reasoningEffort,
+  ).toBe('high');
+});
 async function send(view: View, text: string) {
   fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), { target: { value: text } });
   await waitFor(() =>
@@ -395,7 +461,60 @@ async function streaming(view: View) {
   });
   fireEvent.click(view.getByRole('button', { name: '发送消息' }));
   await waitFor(() => expect(view.getByText('answer:model-a:1')).toBeDefined());
+  expect((view.getByRole('combobox', { name: '选择 AI 模型' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
 }
+
+test('model selector searches the account catalog and keeps the draft when reselecting the current model', async () => {
+  const view = mount();
+  await connected(view);
+  const original = restoreReviewState(host.savedState).activeSessionId;
+  fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
+    target: { value: 'draft to keep' },
+  });
+  fireEvent.click(view.getByRole('combobox', { name: '选择 AI 模型' }));
+  fireEvent.change(await view.findByRole('combobox', { name: '搜索模型' }), {
+    target: { value: 'Model A' },
+  });
+  await waitFor(() => expect(view.queryByRole('option', { name: 'Model B' })).toBeNull());
+  fireEvent.click(view.getByRole('option', { name: 'Model A' }));
+  expect(restoreReviewState(host.savedState).activeSessionId).toBe(original);
+  expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
+    'draft to keep',
+  );
+  expect(host.creations).toHaveLength(0);
+});
+
+test('syntax highlighting preserves code, inline text, unknown languages and Host code actions', async () => {
+  const code = 'const total: number = 1;\n';
+  host.responseText =
+    'Inline `const total = 1`.\n\n```typescript\n' +
+    code +
+    '```\n\n```unknown-language\nraw <sample>\n```';
+  const view = mount();
+  await connected(view);
+  await send(view, 'review this code');
+  const assistant = await waitFor(() => {
+    const message = view.container.querySelector('[data-slot="aui_assistant-message-root"]')!;
+    expect(message?.querySelector('pre code .token')).not.toBeNull();
+    return message;
+  });
+  const frames = Array.from(assistant.querySelectorAll('pre'));
+  expect(frames.filter((frame) => frame.textContent === code)).toHaveLength(2);
+  expect(frames.filter((frame) => frame.textContent?.trim() === 'raw <sample>')).toHaveLength(2);
+  expect(frames.some((frame) => frame.classList.contains('dark:hidden'))).toBe(true);
+  expect(frames.some((frame) => frame.classList.contains('dark:block'))).toBe(true);
+  expect(assistant.querySelector('p > code')?.textContent).toBe('const total = 1');
+  expect(assistant.querySelector('p > code span')).toBeNull();
+  await act(async () => {
+    fireEvent.click(view.getAllByRole('button', { name: '复制代码' })[0]!);
+    fireEvent.click(view.getAllByRole('button', { name: '在编辑器中打开代码' })[0]!);
+    await host.settle();
+  });
+  expect(host.copiedTexts).toEqual([code]);
+  expect(host.openedCode).toEqual([{ code, language: 'typescript' }]);
+});
 async function delta(view: View, suffix: string) {
   await act(async () => {
     host.streamOutput!.enqueue({ type: 'text-delta', id: host.streamId, delta: suffix });
@@ -561,9 +680,7 @@ test('fresh conversation still sends its first turn and a selected historical co
   await send(view, 'conversation-a');
   await answered(view, 1);
   const firstId = restoreReviewState(host.savedState).activeSessionId;
-  fireEvent.change(view.getByRole('combobox', { name: '选择 AI 模型' }), {
-    target: { value: 'model-b' },
-  });
+  await chooseModel(view, 'Model B');
   await waitFor(() =>
     expect(restoreReviewState(host.savedState).activeSessionId).not.toBe(firstId),
   );
@@ -571,9 +688,7 @@ test('fresh conversation still sends its first turn and a selected historical co
   await answered(view, 2);
   fireEvent.click(view.getByRole('tab', { name: 'History' }));
   fireEvent.click(view.getByRole('button', { name: /conversation-a/ }));
-  expect((view.getByRole('combobox', { name: '选择 AI 模型' }) as HTMLSelectElement).value).toBe(
-    'model-a',
-  );
+  expect(view.getByRole('combobox', { name: '选择 AI 模型' }).textContent).toContain('Model A');
   await send(view, 'follow-up-a');
   await answered(view, 3);
   expect(host.runs.map((run) => run.model)).toEqual(['model-a', 'model-b', 'model-a']);
@@ -599,11 +714,11 @@ for (const unavailable of ['model', 'account'] as const) {
       'saved question',
       'saved answer',
     );
-    if (unavailable === 'model') host.models = [{ id: 'model-a', name: 'Model A' }];
+    if (unavailable === 'model') host.models = host.models.filter(({ id }) => id === 'model-a');
     const view = mount();
     await connected(view);
-    expect((view.getByRole('combobox', { name: '选择 AI 模型' }) as HTMLSelectElement).value).toBe(
-      'model-b',
+    expect(view.getByRole('combobox', { name: '选择 AI 模型' }).textContent).toContain(
+      unavailable === 'model' ? 'model-b（当前账户不可用）' : 'Model B',
     );
     await send(view, 'follow-up');
     await waitFor(() =>

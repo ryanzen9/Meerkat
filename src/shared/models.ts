@@ -1,4 +1,5 @@
 // JSON-only data: no VS Code, Node, Bun, or React imports in this layer.
+import type { ReasoningEffort } from './agentModels';
 export interface WorkspaceFolderInfo {
   name: string;
   uri: string;
@@ -87,4 +88,5 @@ export interface ChatSession {
   bridgeSessionId?: string;
   model?: string;
   accountId?: string;
+  reasoningEffort?: ReasoningEffort;
 }

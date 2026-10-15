@@ -3,14 +3,21 @@ import { z } from 'zod';
 import { BridgeError, publicError } from '../errors';
 import type { BridgeRuntime } from '../runtime/bridgeRuntime';
 import { sessionInfo } from '../sessions/store';
+import { reasoningEfforts } from '../../../shared/agentModels';
 
 const idSchema = z.string().min(1).max(128);
 const createSchema = z.object({ providerId: idSchema, model: idSchema }).strict();
 const loginSchema = z.object({ accountId: idSchema.optional() }).strict();
-const textSchema = z.object({ text: z.string().trim().min(1).max(100000) }).strict();
+const textSchema = z
+  .object({
+    text: z.string().trim().min(1).max(100000),
+    reasoningEffort: z.enum(reasoningEfforts).optional(),
+  })
+  .strict();
 const chatSchema = z
   .object({
     sessionId: idSchema,
+    reasoningEffort: z.enum(reasoningEfforts).optional(),
     messages: z
       .array(
         z
@@ -111,8 +118,8 @@ export function createBridgeApi(options: BridgeApiOptions) {
           return new Response(null, { status: 204 });
         }
         if (sessionMatch[2] && method === 'POST') {
-          const { text } = await body(request, textSchema);
-          const run = runtime.start(id, text, request.signal);
+          const { text, reasoningEffort } = await body(request, textSchema);
+          const run = runtime.start(id, text, request.signal, reasoningEffort);
           return createUIMessageStreamResponse({
             stream: run.stream,
             headers: { 'x-bridge-run-id': run.runId },
@@ -140,7 +147,7 @@ export function createBridgeApi(options: BridgeApiOptions) {
         const text = turn.data.text;
         // Existing history and tool calls belong to the provider session. Do not
         // resend the client transcript or execute client-supplied tools/instructions.
-        const run = runtime.start(data.sessionId, text, request.signal);
+        const run = runtime.start(data.sessionId, text, request.signal, data.reasoningEffort);
         return createUIMessageStreamResponse({
           stream: run.stream,
           headers: { 'x-bridge-run-id': run.runId },

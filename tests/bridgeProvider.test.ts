@@ -26,7 +26,9 @@ test('real Agents SDK emits compliant requests and official UI streams with full
   };
   const provider = new OpenAIAgentsProvider(signedInAuth(), http);
   const signal = new AbortController().signal;
-  expect(await provider.listModels(signal)).toEqual([{ id: 'fixture-model', name: 'Fixture' }]);
+  expect(await provider.listModels(signal)).toEqual([
+    { id: 'fixture-model', name: 'Fixture', supportedReasoningEfforts: [] },
+  ]);
   const session = await provider.createSession('fixture-model', signal);
   for (const text of ['first user turn', 'second user turn']) {
     const stream = await provider.run(session, text, signal);

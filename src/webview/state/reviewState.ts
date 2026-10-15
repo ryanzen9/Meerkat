@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatSession, ReviewTab, WebviewState } from '../../shared/models';
 import { isRecord } from '../../shared/protocol';
+import { isReasoningEffort } from '../../shared/agentModels';
 
 export interface ReviewState {
   activeTab: ReviewTab;
@@ -59,12 +60,16 @@ export function restoreReviewState(saved: unknown): ReviewState {
   const data: WebviewState = isRecord(saved) ? saved : {};
   const valid = Array.isArray(data.sessions) ? data.sessions.filter(isSession) : [];
   const allSessions = [...new Map(valid.map((session) => [session.id, session])).values()];
-  const sessions = allSessions.slice(-20).map((session) => ({
-    ...session,
-    title: session.title.slice(0, 80),
-    draft: session.draft.slice(0, 4000),
-    messages: session.messages.slice(-100),
-  }));
+  const sessions = allSessions.slice(-20).map((session) => {
+    const restored = {
+      ...session,
+      title: session.title.slice(0, 80),
+      draft: session.draft.slice(0, 4000),
+      messages: session.messages.slice(-100),
+    };
+    if (!isReasoningEffort(restored.reasoningEffort)) delete restored.reasoningEffort;
+    return restored;
+  });
   if (!sessions.length) sessions.push(createSession());
   const activeSessionId = sessions.some(({ id }) => id === data.activeSessionId)
     ? data.activeSessionId!
@@ -106,8 +111,11 @@ export function startNewReviewSession(state: ReviewState): ReviewState {
   const empty = state.sessions.find(
     ({ messages, draft, bridgeSessionId }) => !messages.length && !draft && !bridgeSessionId,
   );
-  const next = empty ?? createSession();
-  const candidates = empty ? state.sessions : [...state.sessions, next];
+  const next = empty ? { ...empty } : createSession();
+  delete next.reasoningEffort;
+  const candidates = empty
+    ? state.sessions.map((session) => (session.id === next.id ? next : session))
+    : [...state.sessions, next];
   const sessions = candidates.slice(-20);
   return {
     ...state,

@@ -5,7 +5,15 @@ import { MarkdownTextPrimitive, useIsMarkdownCodeBlock } from '@assistant-ui/rea
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
 import { Icon } from './Icon';
 import { Thread, type ThreadComponents } from './assistant-ui/elements/thread.aui';
-import { ReviewComposerContext, ReviewComposerInput, ReviewComposerFooter } from './ReviewComposer';
+import { SyntaxHighlighter } from './assistant-ui/elements/syntax-highlighter';
+import { cn } from '../lib/utils';
+import {
+  ReviewComposerContext,
+  ReviewComposerInput,
+  ReviewComposerFooter,
+  ReviewModelSelector,
+  type ReviewComposerState,
+} from './ReviewComposer';
 
 interface ChatActions {
   openFile(uri: string): Promise<unknown>;
@@ -95,16 +103,18 @@ function MarkdownLink({ href, children }: ComponentPropsWithoutRef<'a'>) {
   );
 }
 
-function MarkdownCode({ children }: ComponentPropsWithoutRef<'code'>) {
+function MarkdownCode({ className, ...props }: ComponentPropsWithoutRef<'code'>) {
   const block = useIsMarkdownCodeBlock();
   return (
     <code
-      className={
-        block ? 'font-mono text-[0.85rem]' : 'rounded-sm bg-code px-1 py-0.5 font-mono text-[0.9em]'
-      }
-    >
-      {children}
-    </code>
+      {...props}
+      className={cn(
+        block
+          ? 'font-mono text-[0.85rem]'
+          : 'rounded-sm bg-code px-1 py-0.5 font-mono text-[0.9em]',
+        className,
+      )}
+    />
   );
 }
 
@@ -117,13 +127,18 @@ function MarkdownText() {
       urlTransform={(url) => (/^(https?:|mailto:|review-file:)/.test(url) ? url : '')}
       components={{
         CodeHeader,
+        SyntaxHighlighter,
         a: MarkdownLink,
         img: ({ alt }) => <span className="text-muted">{alt}</span>,
         code: MarkdownCode,
-        pre: ({ children }) => (
-          <pre className="mb-3 max-w-full overflow-x-auto rounded-b-md border border-t-0 border-widget bg-code p-3 leading-relaxed whitespace-pre">
-            {children}
-          </pre>
+        pre: ({ className, ...props }) => (
+          <pre
+            {...props}
+            className={cn(
+              'mb-3 max-w-full overflow-x-auto rounded-b-md border border-t-0 border-widget bg-code p-3 leading-relaxed whitespace-pre',
+              className,
+            )}
+          />
         ),
       }}
     />
@@ -218,6 +233,7 @@ const THREAD_COMPONENTS: ThreadComponents = {
   Text: MarkdownText,
   ComposerInput: ReviewComposerInput,
   ComposerFooter: ReviewComposerFooter,
+  ComposerLeading: ReviewModelSelector,
   AssistantActionBar: ReviewAssistantActionBar,
   UserActionBar: () => null,
   // App renders connection and run failures in its shared alert banner.
@@ -228,13 +244,9 @@ export function AgentChat({
   authenticated,
   onFiles,
   ...composer
-}: {
+}: ReviewComposerState & {
   authenticated: boolean;
   onFiles(): void;
-  sessionId: string;
-  draft: string;
-  onDraftChange(draft: string): void;
-  onNew(): void;
 }) {
   return (
     <WelcomeContext.Provider value={{ authenticated, onFiles }}>

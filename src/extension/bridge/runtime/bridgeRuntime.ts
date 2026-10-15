@@ -3,6 +3,7 @@ import type { UIMessageChunk } from 'ai';
 import { BridgeError, publicError } from '../errors';
 import type { ProviderRegistry } from '../providers/registry';
 import { SessionStore } from '../sessions/store';
+import type { ReasoningEffort } from '../../../shared/agentModels';
 
 export type RunStatus = 'running' | 'completed' | 'cancelled' | 'failed';
 interface Run {
@@ -28,6 +29,7 @@ export class BridgeRuntime {
     sessionId: string,
     text: string,
     signal: AbortSignal,
+    reasoningEffort?: ReasoningEffort,
   ): { runId: string; stream: ReadableStream<UIMessageChunk> } {
     if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
     const session = this.sessions.get(sessionId);
@@ -118,7 +120,7 @@ export class BridgeRuntime {
           }
           combined.throwIfAborted();
           opening ??= provider
-            .run(session.provider, text, combined)
+            .run(session.provider, text, combined, reasoningEffort)
             .then((source) => source.getReader());
           reader ??= await opening;
           const next = await reader.read();

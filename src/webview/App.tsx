@@ -53,27 +53,6 @@ export function App() {
                     {connection.accounts.find((a) => a.id === connection.activeAccountId)?.email ??
                       'ChatGPT'}
                   </span>
-                  <select
-                    aria-label="选择 AI 模型"
-                    className="min-w-0 flex-1 bg-input text-input-foreground"
-                    value={chat.model}
-                    disabled={chat.isRunning}
-                    onChange={(event) => {
-                      connection.setModel(event.target.value);
-                      chat.newSession();
-                    }}
-                  >
-                    {chat.model && !chat.modelAvailable && (
-                      <option value={chat.model} disabled>
-                        {chat.model}（当前账户不可用）
-                      </option>
-                    )}
-                    {connection.models.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ))}
-                  </select>
                   <button
                     type="button"
                     className="text-link"
@@ -165,6 +144,15 @@ export function App() {
                 draft={chat.session.draft}
                 onDraftChange={chat.setDraft}
                 onNew={chat.newSession}
+                models={connection.models}
+                reasoningEffort={chat.reasoningEffort}
+                onReasoningEffortChange={chat.setReasoningEffort}
+                model={chat.model}
+                modelDisabled={!connection.authenticated || chat.isRunning}
+                onModelChange={(model) => {
+                  connection.setModel(model);
+                  chat.newSession();
+                }}
               />
             </section>
             <section

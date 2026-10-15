@@ -15,9 +15,11 @@ code .
 1. 按 F5 启动 Extension Development Host，信任打开的工作区，在 Source Control 展开 Review Bot。
 2. 点击 **Continue with ChatGPT**，也可执行同名 Review Bot 命令。扩展先启动 `127.0.0.1` 临时端口上的 callback listener，再打开系统浏览器。
 3. 在 OpenAI 页面完成登录、动态注册与 ChatGPT plan usage 授权。无需固定 Client ID、Platform API Key、client secret、Codex CLI 或 app-server。
-4. 浏览器显示登录完成后回到面板。模型下拉框来自该账户的实时 `/v1/models` catalog，保持官方顺序，只显示 `visibility: list` 的模型。
+4. 浏览器显示登录完成后回到面板。模型下拉框来自该账户的实时 `/v1/models` catalog，OAuth 响应保持官方顺序，只显示 `visibility: list` 的模型；解析器也兼容通用 API 的 `data[].id` 格式。
 5. 发送文字或粘贴代码，观察文字逐步生成。可发送“用 inspect_text 检查这段代码的 TODO 标记”测试 Function Tool。点击 **停止**取消。切换模型会开始新会话。
 6. 退出并重启扩展后，OAuth 凭据从 VS Code SecretStorage 恢复；下一次模型列表/推理请求在令牌接近到期时刷新。登出会先停止运行、尝试撤销 refresh token，再清除本机令牌；远端撤销未确认时面板给出说明。
+
+**Thinking：**模型目录返回的 `supported_reasoning_levels` / `default_reasoning_level` 或 `supportedReasoningEfforts` / `defaultReasoningEffort` 会统一为 Bridge 的 `supportedReasoningEfforts` 和 `defaultReasoningEffort`。仅展示上游提供且当前 SDK 支持的档位；缺少能力数据时返回空列表并隐藏 Thinking。默认档位会显示在选择器中，用户选择随会话保存。调整 Thinking 会保留同一会话的上下文，并通过每次 turn 的 `reasoningEffort` 传到 Agents SDK 的 `modelSettings.reasoning.effort`。生成期间禁用调整，Host 校验档位属于该会话模型的能力范围。
 
 **账户与工作区准入：**官方文档描述的是 ChatGPT plan usage 预览。实际准入、订阅、workspace policy、模型、额度和工具权限以 OpenAI 的授权与接口返回为准。不能用一个有效 ID Token 推断推理权限；Bridge 检查 token response 中的 plan usage scopes。
 
@@ -63,21 +65,21 @@ curl -N -D /tmp/review-bot-stream-headers "$BRIDGE_URL/v1/sessions/$BRIDGE_SESSI
 
 除了 OAuth 浏览器回调，所有 HTTP 接口都需要 `Authorization: Bearer <本次进程的随机访问凭据>`。JSON 请求使用 `Content-Type: application/json`。
 
-| 方法         | 路径                        | 输入 / 输出                                                         |
-| ------------ | --------------------------- | ------------------------------------------------------------------- |
-| GET          | `/v1/providers`             | Provider 描述与能力                                                 |
-| GET          | `/v1/providers/:id/auth`    | 登录状态、账户标识、授权 pending 与可选的安全 `signInError`；无令牌 |
-| POST         | `/v1/providers/:id/login`   | `{}` 新注册，或 `{accountId}` 复用保存的注册；Host 打开浏览器       |
-| GET          | `/auth/callback`            | 官方 OAuth query；验证 state 后交换 code，仅返回固定文本            |
-| POST         | `/v1/providers/:id/logout`  | 清除本机凭据并返回 `remoteRevocationConfirmed`                      |
-| GET          | `/v1/providers/:id/models`  | 实时、账户隔离的 `{id,name}[]`                                      |
-| POST         | `/v1/sessions`              | `{providerId,model}` → `201` 会话元数据                             |
-| GET          | `/v1/sessions`              | 当前 Host 会话列表                                                  |
-| GET / DELETE | `/v1/sessions/:id`          | 元数据 / 取消关联运行并删除会话                                     |
-| POST         | `/v1/sessions/:id/messages` | `{text}` → AI SDK UI Message SSE                                    |
-| POST         | `/v1/chat`                  | `{sessionId,messages:UIMessage[]}` → SSE，仅取最后的 text 用户 turn |
-| GET          | `/v1/runs/:id`              | `running / completed / cancelled / failed`                          |
-| POST         | `/v1/runs/:id/cancel`       | 将 AbortSignal 传至 SDK 与本地工具                                  |
+| 方法         | 路径                        | 输入 / 输出                                                                          |
+| ------------ | --------------------------- | ------------------------------------------------------------------------------------ |
+| GET          | `/v1/providers`             | Provider 描述与能力                                                                  |
+| GET          | `/v1/providers/:id/auth`    | 登录状态、账户标识、授权 pending 与可选的安全 `signInError`；无令牌                  |
+| POST         | `/v1/providers/:id/login`   | `{}` 新注册，或 `{accountId}` 复用保存的注册；Host 打开浏览器                        |
+| GET          | `/auth/callback`            | 官方 OAuth query；验证 state 后交换 code，仅返回固定文本                             |
+| POST         | `/v1/providers/:id/logout`  | 清除本机凭据并返回 `remoteRevocationConfirmed`                                       |
+| GET          | `/v1/providers/:id/models`  | 实时、账户隔离的 `{id,name,supportedReasoningEfforts,defaultReasoningEffort?}[]`     |
+| POST         | `/v1/sessions`              | `{providerId,model}` → `201` 会话元数据                                              |
+| GET          | `/v1/sessions`              | 当前 Host 会话列表                                                                   |
+| GET / DELETE | `/v1/sessions/:id`          | 元数据 / 取消关联运行并删除会话                                                      |
+| POST         | `/v1/sessions/:id/messages` | `{text,reasoningEffort?}` → AI SDK UI Message SSE                                    |
+| POST         | `/v1/chat`                  | `{sessionId,messages:UIMessage[],reasoningEffort?}` → SSE，仅取最后的 text 用户 turn |
+| GET          | `/v1/runs/:id`              | `running / completed / cancelled / failed`                                           |
+| POST         | `/v1/runs/:id/cancel`       | 将 AbortSignal 传至 SDK 与本地工具                                                   |
 
 普通错误使用 `{error:{code,message}}` 和对应 HTTP 状态码。流开始后的错误转换为 AI SDK 的 `error` chunk；`data-run-state` 是 transient data part，携带 session/run 标识与状态。SSE 封装和 `[DONE]` 来自 AI SDK，Agent 文本、工具输入和工具输出转换来自 OpenAI 官方 `createAiSdkUiMessageStream`。
 

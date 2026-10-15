@@ -67,6 +67,31 @@ test('API manages sessions, provider/model lists and official SSE with run state
   }
 });
 
+test('turn routes reject invalid reasoning effort values before dispatch', async () => {
+  const { runtime, api } = setup();
+  try {
+    const id = await session(api);
+    const messages = [
+      { id: 'question', role: 'user', parts: [{ type: 'text', text: 'Question' }] },
+    ];
+    for (const reasoningEffort of ['invalid', 10, null, { effort: 'high' }]) {
+      expect(
+        (await api(request('/v1/chat', 'POST', { sessionId: id, messages, reasoningEffort })))
+          .status,
+      ).toBe(400);
+      expect(
+        (
+          await api(
+            request(`/v1/sessions/${id}/messages`, 'POST', { text: 'Question', reasoningEffort }),
+          )
+        ).status,
+      ).toBe(400);
+    }
+  } finally {
+    await runtime.dispose();
+  }
+});
+
 test('validates input, provider/model selection and accepts only new text user turns', async () => {
   const { runtime, api } = setup();
   try {

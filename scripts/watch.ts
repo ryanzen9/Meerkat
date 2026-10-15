@@ -1,9 +1,9 @@
-import { mkdir, open, readdir, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdir, open, readdir, rm, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const projectRoot = fileURLToPath(new URL('../', import.meta.url));
-const targets = ['extension', 'webview'] as const;
+const projectRoot = fileURLToPath(new URL("../", import.meta.url));
+const targets = ["extension", "webview"] as const;
 type Target = (typeof targets)[number];
 
 let stopping = false;
@@ -19,14 +19,15 @@ function shutdown(): void {
   }
 }
 
-process.once('SIGINT', shutdown);
-process.once('SIGTERM', shutdown);
+process.once("SIGINT", shutdown);
+process.once("SIGTERM", shutdown);
 
 // Poll a small source tree. Native fs.watch/Rolldown watchers are unreliable on
 // mounted/network volumes; this detects new files and atomic editor saves too.
 async function fingerprint(path: string): Promise<string> {
   const info = await stat(path).catch((error: unknown) => {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return undefined;
     throw error;
   });
   if (!info) return `${path}:missing`;
@@ -38,23 +39,25 @@ async function fingerprint(path: string): Promise<string> {
       .toSorted((a, b) => a.name.localeCompare(b.name))
       .map((entry) => fingerprint(join(path, entry.name))),
   );
-  return `${path}/|${children.join('|')}`;
+  return `${path}/|${children.join("|")}`;
 }
 
 async function fingerprints(): Promise<Record<Target, string>> {
   const common = await Promise.all(
-    ['src/shared', 'package.json', 'tsconfig.base.json', 'tsconfig.json'].map((path) =>
-      fingerprint(join(projectRoot, path)),
+    ["src/shared", "package.json", "tsconfig.base.json", "tsconfig.json"].map(
+      (path) => fingerprint(join(projectRoot, path)),
     ),
   );
   const [extension, webview] = await Promise.all(
     targets.map(async (target) => {
       const files = await Promise.all(
-        [`src/${target}`, `vite.config.${target}.ts`, `tsconfig.${target}.json`].map((path) =>
-          fingerprint(join(projectRoot, path)),
-        ),
+        [
+          `src/${target}`,
+          `vite.config.${target}.ts`,
+          `tsconfig.${target}.json`,
+        ].map((path) => fingerprint(join(projectRoot, path))),
       );
-      return [...common, ...files].join('|');
+      return [...common, ...files].join("|");
     }),
   );
   return { extension: extension!, webview: webview! };
@@ -64,40 +67,43 @@ async function build(target: Target): Promise<void> {
   console.log(`[watch] building ${target}`);
   const child = Bun.spawn(
     [
-      'node',
-      fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url)),
-      'build',
-      '--config',
+      "node",
+      fileURLToPath(
+        new URL("../node_modules/vite/bin/vite.js", import.meta.url),
+      ),
+      "build",
+      "--config",
       `vite.config.${target}.ts`,
-      '--mode',
-      'development',
+      "--mode",
+      "development",
     ],
-    { cwd: projectRoot, stdout: 'inherit', stderr: 'inherit' },
+    { cwd: projectRoot, stdout: "inherit", stderr: "inherit" },
   );
   activeBuild = child;
   try {
     const exitCode = await child.exited;
     if (stopping) return;
-    if (exitCode !== 0) throw new Error(`${target} build failed (exit ${exitCode})`);
+    if (exitCode !== 0)
+      throw new Error(`${target} build failed (exit ${exitCode})`);
     console.log(`[watch] built ${target}`);
   } finally {
     activeBuild = undefined;
   }
 }
 
-await mkdir(join(projectRoot, 'dist'), { recursive: true });
-const lockPath = join(projectRoot, 'dist/.watch.lock');
-const lock = await open(lockPath, 'wx').catch((error: unknown) => {
+await mkdir(join(projectRoot, "dist"), { recursive: true });
+const lockPath = join(projectRoot, "dist/.watch.lock");
+const lock = await open(lockPath, "wx").catch((error: unknown) => {
   throw new Error(
-    'Cannot start dev. Terminate the existing dev task first. If it was force-killed, ' +
-      'confirm it has stopped before removing dist/.watch.lock.',
+    "Cannot start dev. Terminate the existing dev task first. If it was force-killed, " +
+      "confirm it has stopped before removing dist/.watch.lock.",
     { cause: error },
   );
 });
 
 try {
   await lock.writeFile(String(process.pid));
-  console.log('[watch] starting');
+  console.log("[watch] starting");
   const previous: Partial<Record<Target, string>> = {};
   const failed: Partial<Record<Target, string>> = {};
   let ready = false;
@@ -110,7 +116,11 @@ try {
       let attempted = false;
       for (const target of targets) {
         if (stopping) break;
-        if (current[target] === previous[target] || current[target] === failed[target]) continue;
+        if (
+          current[target] === previous[target] ||
+          current[target] === failed[target]
+        )
+          continue;
         attempted = true;
         try {
           await build(target);
@@ -120,7 +130,6 @@ try {
           }
         } catch (error) {
           failed[target] = current[target];
-          console.error(error);
         }
       }
       // Do not release F5 against stale output, including edits made during a build.
@@ -131,7 +140,7 @@ try {
         targets.every((target) => previous[target] === latest[target])
       ) {
         ready = true;
-        console.log('[watch] ready');
+        console.log("[watch] ready");
       }
     } catch (error) {
       console.error(error);

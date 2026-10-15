@@ -1,4 +1,10 @@
 import type { UIMessageChunk } from 'ai';
+import type {
+  AgentModel,
+  ReasoningEffort,
+  SupportedReasoningEffort,
+} from '../../../shared/agentModels';
+export type { AgentModel } from '../../../shared/agentModels';
 export interface AccountStatus {
   authenticated: boolean;
   activeAccountId?: string;
@@ -7,10 +13,6 @@ export interface AccountStatus {
   accounts: { id: string; email?: string; subject: string; signedIn: boolean }[];
 }
 
-export interface AgentModel {
-  id: string;
-  name: string;
-}
 export interface ProviderInfo {
   id: string;
   name: string;
@@ -25,6 +27,8 @@ export interface ProviderSession {
   accountId: string;
   model: string;
   state: unknown;
+  supportedReasoningEfforts?: SupportedReasoningEffort[];
+  defaultReasoningEffort?: ReasoningEffort;
 }
 export interface AgentProvider {
   readonly info: ProviderInfo;
@@ -39,6 +43,7 @@ export interface AgentProvider {
     session: ProviderSession,
     text: string,
     signal: AbortSignal,
+    reasoningEffort?: ReasoningEffort,
   ): Promise<ReadableStream<UIMessageChunk>>;
   deleteSession(session: ProviderSession): Promise<void>;
   dispose(): Promise<void>;

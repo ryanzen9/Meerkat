@@ -4,6 +4,7 @@ import {
   createSession,
   restoreReviewState,
   sessionMarkdown,
+  startNewReviewSession,
 } from '../src/webview/state/reviewState';
 
 test('invalid saved state recovers to a usable chat session', () => {
@@ -57,4 +58,20 @@ test('switching sessions preserves other conversations and bounds retained histo
     messages: [{ id: 'bad', role: 'assistant', text: 'bad', createdAt: 'not-a-date' }],
   };
   expect(restoreReviewState({ sessions: [invalid] }).sessions[0]?.messages).toEqual([]);
+});
+
+test('reasoning settings restore per session and invalid saved settings preserve the transcript', () => {
+  const original = { ...createSession(), reasoningEffort: 'high' as const };
+  const state = appendTurn(restoreReviewState({ sessions: [original] }), 'Question', 'Answer');
+  expect(restoreReviewState(state).sessions[0]!.reasoningEffort).toBe('high');
+  const restored = restoreReviewState({
+    ...state,
+    sessions: [{ ...state.sessions[0], reasoningEffort: 'invalid' }],
+  });
+  expect(restored.sessions[0]!.messages).toHaveLength(2);
+  expect(restored.sessions[0]!.reasoningEffort).toBeUndefined();
+  const empty = restoreReviewState({ sessions: [original] });
+  const next = startNewReviewSession(empty);
+  expect(next.sessions[0]!.reasoningEffort).toBeUndefined();
+  expect(empty.sessions[0]!.reasoningEffort).toBe('high');
 });

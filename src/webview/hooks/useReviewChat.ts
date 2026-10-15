@@ -7,6 +7,7 @@ import { vscodeBridge } from '../services/vscode';
 import { restoreReviewState, sessionMarkdown, startNewReviewSession } from '../state/reviewState';
 import { bridgeFetch } from '../services/bridgeFetch';
 import { bridgeJson, BridgeResponseError } from '../services/bridgeApi';
+import type { AgentModel, ReasoningEffort } from '../../shared/agentModels';
 
 const convertMessage = (message: ChatMessage): UIMessage => ({
   id: message.id,
@@ -18,7 +19,7 @@ export function useReviewChat(connection: {
   model: string;
   authenticated: boolean;
   activeAccountId?: string;
-  models: { id: string; name: string }[];
+  models: AgentModel[];
 }) {
   const [state, setState] = useState(() => restoreReviewState(vscodeBridge.getState()));
   const session = state.sessions.find(({ id }) => id === state.activeSessionId)!;
@@ -32,6 +33,13 @@ export function useReviewChat(connection: {
   const [cleanupError, setCleanupError] = useState('');
   const model = session.model ?? connection.model;
   const modelAvailable = connection.models.some((item) => item.id === model);
+  const selectedModel = connection.models.find((item) => item.id === model);
+  const reasoningEffort = session.reasoningEffort ?? selectedModel?.defaultReasoningEffort;
+  const effortAvailable =
+    reasoningEffort === undefined ||
+    selectedModel?.supportedReasoningEfforts.some(
+      (option) => option.reasoningEffort === reasoningEffort,
+    );
   const bindingError =
     connection.authenticated &&
     session.accountId &&
@@ -39,7 +47,9 @@ export function useReviewChat(connection: {
       ? '此会话属于另一个 ChatGPT 账户，请切回原账户或新建会话。'
       : connection.authenticated && session.model && !modelAvailable
         ? '此会话的模型在当前账户中不可用，请选择模型并新建会话。'
-        : '';
+        : connection.authenticated && modelAvailable && !effortAvailable
+          ? '此会话的推理强度已不可用，请选择当前模型支持的 Thinking 档位。'
+          : '';
 
   useEffect(() => {
     vscodeBridge.setState(state);
@@ -148,7 +158,13 @@ export function useReviewChat(connection: {
               ),
             }));
           }
-          return { body: { sessionId, messages: messages.slice(-1) } };
+          return {
+            body: {
+              sessionId,
+              messages: messages.slice(-1),
+              ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+            },
+          };
         },
       }),
     [
@@ -159,6 +175,7 @@ export function useReviewChat(connection: {
       session.id,
       session.bridgeSessionId,
       bindingError,
+      reasoningEffort,
     ],
   );
   const chat = useChat({
@@ -227,6 +244,14 @@ export function useReviewChat(connection: {
       })),
     [],
   );
+  const setReasoningEffort = useCallback((effort: ReasoningEffort) => {
+    setState((current) => ({
+      ...current,
+      sessions: current.sessions.map((item) =>
+        item.id === current.activeSessionId ? { ...item, reasoningEffort: effort } : item,
+      ),
+    }));
+  }, []);
   const setTab = useCallback(
     (activeTab: ReviewTab) => setState((current) => ({ ...current, activeTab })),
     [],
@@ -255,6 +280,8 @@ export function useReviewChat(connection: {
     runtime,
     model,
     modelAvailable,
+    reasoningEffort,
+    setReasoningEffort,
     error: bindingError || chat.error?.message || cleanupError,
     isRunning: chat.status === 'submitted' || chat.status === 'streaming',
     setDraft,
