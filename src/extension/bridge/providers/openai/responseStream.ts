@@ -50,7 +50,11 @@ export function restoreCompletedOutput(response: Response): Response {
             if (
               event.type === 'response.completed' &&
               isRecord(event.response) &&
-              event.response.status === 'completed' &&
+              // The terminal event is authoritative, as in the Agents SDK.
+              // Do not depend on a redundant status field to end the turn.
+              event.response.status !== 'failed' &&
+              event.response.status !== 'incomplete' &&
+              !event.response.error &&
               Array.isArray(event.response.output)
             ) {
               if (!event.response.output.length) {

@@ -38,32 +38,40 @@ const outputMessage = (id: string) => ({
   content: [{ type: 'output_text', text: '你好' }],
 });
 
-test('a streamed greeting with an empty terminal output makes one inference and preserves complete multi-turn history', async () => {
-  const bodies: Record<string, unknown>[] = [];
-  const provider = new OpenAIAgentsProvider(signedInAuth(), async (url, init) => {
-    if (String(url).endsWith('/models')) return models();
-    bodies.push(JSON.parse(init!.body as string));
-    return sse(missingTerminalOutput(responseEvents(`answer-${bodies.length}`)));
+for (const terminalStatus of ['completed', undefined, 'in_progress']) {
+  test(`a streamed greeting with an empty terminal output and ${terminalStatus ?? 'missing'} status makes one inference and preserves complete multi-turn history`, async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const provider = new OpenAIAgentsProvider(signedInAuth(), async (url, init) => {
+      if (String(url).endsWith('/models')) return models();
+      bodies.push(JSON.parse(init!.body as string));
+      return sse(
+        missingTerminalOutput(responseEvents(`answer-${bodies.length}`)).map((event) =>
+          event.type === 'response.completed'
+            ? { ...event, response: { ...(event.response as object), status: terminalStatus } }
+            : event,
+        ),
+      );
+    });
+    const signal = new AbortController().signal;
+    const session = await provider.createSession('fixture-model', signal);
+    try {
+      const first = await chunks(await provider.run(session, 'hello', signal));
+      expect(bodies).toHaveLength(1);
+      expect(text(first)).toBe('answer-1');
+      expect(first.filter((part) => part.type === 'start-step')).toHaveLength(1);
+      const second = await chunks(await provider.run(session, 'follow up', signal));
+      expect(bodies).toHaveLength(2);
+      expect(text(second)).toBe('answer-2');
+      const history = JSON.stringify(bodies[1]!.input);
+      expect(history).toContain('hello');
+      expect(history).toContain('answer-1');
+      expect(history).toContain('follow up');
+    } finally {
+      await provider.deleteSession(session);
+      await provider.dispose();
+    }
   });
-  const signal = new AbortController().signal;
-  const session = await provider.createSession('fixture-model', signal);
-  try {
-    const first = await chunks(await provider.run(session, 'hello', signal));
-    expect(bodies).toHaveLength(1);
-    expect(text(first)).toBe('answer-1');
-    expect(first.filter((part) => part.type === 'start-step')).toHaveLength(1);
-    const second = await chunks(await provider.run(session, 'follow up', signal));
-    expect(bodies).toHaveLength(2);
-    expect(text(second)).toBe('answer-2');
-    const history = JSON.stringify(bodies[1]!.input);
-    expect(history).toContain('hello');
-    expect(history).toContain('answer-1');
-    expect(history).toContain('follow up');
-  } finally {
-    await provider.deleteSession(session);
-    await provider.dispose();
-  }
-});
+}
 
 test('missing terminal output still executes a Function Tool and stops after its answer', async () => {
   const bodies: Record<string, unknown>[] = [];
@@ -204,6 +212,28 @@ test('a populated terminal response remains authoritative and failed responses s
   }
   const denied = Response.json({ error: 'unauthorized' }, { status: 401 });
   expect(restoreCompletedOutput(denied)).toBe(denied);
+});
+
+test('an empty terminal output never repairs an unsuccessful status or a provider error', async () => {
+  for (const response of [
+    { status: 'failed', output: [] },
+    { status: 'incomplete', output: [] },
+    { output: [], error: { code: 'subscription_sharing_usage_limit_exceeded' } },
+    { status: 'completed', output: [], error: { code: 'subscription_sharing_usage_unavailable' } },
+  ]) {
+    const event = { type: 'response.completed', response };
+    const output = await restoreCompletedOutput(
+      sse([
+        { type: 'response.output_item.done', output_index: 0, item: outputMessage('streamed') },
+        event,
+      ]),
+    ).text();
+    const last = output
+      .split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .at(-1)!;
+    expect(JSON.parse(last.slice(6))).toMatchObject(event);
+  }
 });
 
 test('cancelling the normalized stream cancels its upstream response body', async () => {
