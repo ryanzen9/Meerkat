@@ -1,24 +1,10 @@
-import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useEffectEvent,
-  useMemo,
-  useState,
-} from "react";
-import { Icon } from "./Icon";
-import { OpenAILogo } from "./assistant-ui/elements/logos";
-import {
-  ModelSelector,
-  type ModelOption,
-} from "./assistant-ui/elements/model-selector.aui";
+import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react';
+import { createContext, useContext, useEffect, useEffectEvent, useMemo, useState } from 'react';
+import { Icon } from './Icon';
+import { OpenAILogo } from './assistant-ui/elements/logos';
+import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
 
-import {
-  isReasoningEffort,
-  type AgentModel,
-  type ReasoningEffort,
-} from "@shared/agentModels";
+import { isReasoningEffort, type AgentModel, type ReasoningEffort } from '@shared/agentModels';
 
 export interface ReviewComposerState {
   sessionId: string;
@@ -35,18 +21,16 @@ export interface ReviewComposerState {
   onModelChange(model: string): void;
 }
 
-export const ReviewComposerContext = createContext<ReviewComposerState | null>(
-  null,
-);
+export const ReviewComposerContext = createContext<ReviewComposerState | null>(null);
 
 const EFFORT_LABELS: Record<ReasoningEffort, string> = {
-  none: "Off",
-  minimal: "Min",
-  low: "Low",
-  medium: "Med",
-  high: "High",
-  xhigh: "XHigh",
-  max: "Max",
+  none: 'Off',
+  minimal: 'Min',
+  low: 'Low',
+  medium: 'Med',
+  high: 'High',
+  xhigh: 'XHigh',
+  max: 'Max',
 };
 
 export function ReviewModelSelector() {
@@ -85,27 +69,21 @@ export function ReviewModelSelector() {
     <ModelSelector
       models={options}
       value={model}
-      effort={reasoningEffort ?? ""}
+      effort={reasoningEffort ?? ''}
       onEffortChange={(value) => {
         if (
           !modelDisabled &&
           isReasoningEffort(value) &&
           models
             .find(({ id }) => id === model)
-            ?.supportedReasoningEfforts.some(
-              (option) => option.reasoningEffort === value,
-            )
+            ?.supportedReasoningEfforts.some((option) => option.reasoningEffort === value)
         )
           onReasoningEffortChange(value);
       }}
       open={!modelDisabled && open}
       onOpenChange={setOpen}
       onValueChange={(value) => {
-        if (
-          !modelDisabled &&
-          value !== model &&
-          models.some(({ id }) => id === value)
-        )
+        if (!modelDisabled && value !== model && models.some(({ id }) => id === value))
           onModelChange(value);
       }}
       disabled={modelDisabled || !models.length}
@@ -120,9 +98,7 @@ export function ReviewModelSelector() {
 }
 
 export function ReviewComposerInput({ autoFocus }: { autoFocus: boolean }) {
-  const { sessionId, draft, onDraftChange } = useContext(
-    ReviewComposerContext,
-  )!;
+  const { sessionId, draft, onDraftChange } = useContext(ReviewComposerContext)!;
   const aui = useAui();
   const readDraft = useEffectEvent(() => draft);
   const saveDraft = useEffectEvent(onDraftChange);
@@ -160,10 +136,10 @@ export function ReviewComposerFooter() {
     <div className="mt-1.5 flex min-w-0 items-center justify-between gap-2 text-[0.7rem] text-muted">
       <span id="composer-hint" className="truncate" aria-live="polite">
         {modelsLoading
-          ? "正在加载模型…"
+          ? '正在加载模型…'
           : text.length === 4000
-            ? "已达到 4000 字符上限"
-            : "Enter 发送 · Shift+Enter 换行"}
+            ? '已达到 4000 字符上限'
+            : 'Enter 发送 · Shift+Enter 换行'}
       </span>
       <button
         type="button"

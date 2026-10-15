@@ -68,7 +68,7 @@
         {
           "id": "reviewBot",
           "title": "Review Bot",
-          "icon": "resources/review-bot.svg"
+          "icon": "resources/meerkat.svg"
         }
       ]
     },
@@ -79,7 +79,7 @@
           "id": "reviewBot.panel",
           "name": "Review Bot",
           "contextualTitle": "Review Bot",
-          "icon": "resources/review-bot.svg",
+          "icon": "resources/meerkat.svg",
           "visibility": "visible"
         }
       ]

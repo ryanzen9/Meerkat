@@ -4,7 +4,7 @@
 !LICENSE
 !THIRD_PARTY_NOTICES.md
 !CHANGELOG.md
-!resources/review-bot.svg
+!resources/meerkat.svg
 !dist/extension/**/*.cjs
 !dist/extension/THIRD_PARTY_LICENSES.md
 !docs/agent-bridge.md
