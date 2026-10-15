@@ -39,38 +39,42 @@ const outputMessage = (id: string) => ({
 });
 
 for (const terminalStatus of ['completed', undefined, 'in_progress']) {
-  test(`a streamed greeting with an empty terminal output and ${terminalStatus ?? 'missing'} status makes one inference and preserves complete multi-turn history`, async () => {
-    const bodies: Record<string, unknown>[] = [];
-    const provider = new OpenAIAgentsProvider(signedInAuth(), async (url, init) => {
-      if (String(url).endsWith('/models')) return models();
-      bodies.push(JSON.parse(init!.body as string));
-      return sse(
-        missingTerminalOutput(responseEvents(`answer-${bodies.length}`)).map((event) =>
-          event.type === 'response.completed'
-            ? { ...event, response: { ...(event.response as object), status: terminalStatus } }
-            : event,
-        ),
-      );
+  for (const contentType of [true, false]) {
+    test(`a streamed greeting with empty output, ${terminalStatus ?? 'missing'} status and ${contentType ? 'present' : 'missing'} content-type makes one inference and preserves complete multi-turn history`, async () => {
+      const bodies: Record<string, unknown>[] = [];
+      const provider = new OpenAIAgentsProvider(signedInAuth(), async (url, init) => {
+        if (String(url).endsWith('/models')) return models();
+        bodies.push(JSON.parse(init!.body as string));
+        const response = sse(
+          missingTerminalOutput(responseEvents(`answer-${bodies.length}`)).map((event) =>
+            event.type === 'response.completed'
+              ? { ...event, response: { ...(event.response as object), status: terminalStatus } }
+              : event,
+          ),
+        );
+        if (!contentType) response.headers.delete('content-type');
+        return response;
+      });
+      const signal = new AbortController().signal;
+      const session = await provider.createSession('fixture-model', signal);
+      try {
+        const first = await chunks(await provider.run(session, 'hello', signal));
+        expect(bodies).toHaveLength(1);
+        expect(text(first)).toBe('answer-1');
+        expect(first.filter((part) => part.type === 'start-step')).toHaveLength(1);
+        const second = await chunks(await provider.run(session, 'follow up', signal));
+        expect(bodies).toHaveLength(2);
+        expect(text(second)).toBe('answer-2');
+        const history = JSON.stringify(bodies[1]!.input);
+        expect(history).toContain('hello');
+        expect(history).toContain('answer-1');
+        expect(history).toContain('follow up');
+      } finally {
+        await provider.deleteSession(session);
+        await provider.dispose();
+      }
     });
-    const signal = new AbortController().signal;
-    const session = await provider.createSession('fixture-model', signal);
-    try {
-      const first = await chunks(await provider.run(session, 'hello', signal));
-      expect(bodies).toHaveLength(1);
-      expect(text(first)).toBe('answer-1');
-      expect(first.filter((part) => part.type === 'start-step')).toHaveLength(1);
-      const second = await chunks(await provider.run(session, 'follow up', signal));
-      expect(bodies).toHaveLength(2);
-      expect(text(second)).toBe('answer-2');
-      const history = JSON.stringify(bodies[1]!.input);
-      expect(history).toContain('hello');
-      expect(history).toContain('answer-1');
-      expect(history).toContain('follow up');
-    } finally {
-      await provider.deleteSession(session);
-      await provider.dispose();
-    }
-  });
+  }
 }
 
 test('missing terminal output still executes a Function Tool and stops after its answer', async () => {
@@ -92,7 +96,9 @@ test('missing terminal output still executes a Function Tool and stops after its
             },
           ])
         : responseEvents('Inspected');
-    return sse(missingTerminalOutput(events));
+    const response = sse(missingTerminalOutput(events));
+    response.headers.delete('content-type');
+    return response;
   });
   const signal = new AbortController().signal;
   const session = await provider.createSession('fixture-model', signal);

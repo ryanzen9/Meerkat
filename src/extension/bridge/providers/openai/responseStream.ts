@@ -7,12 +7,9 @@ import { BridgeError } from '../../errors';
 // terminal response.output empty (observed with gpt-6.1-sol). The Agents SDK
 // uses that terminal output to finish its loop and commit session history.
 export function restoreCompletedOutput(response: Response): Response {
-  if (
-    !response.ok ||
-    !response.body ||
-    !response.headers.get('content-type')?.includes('text/event-stream')
-  )
-    return response;
+  // planFetch already requires stream:true. The Extension Host can omit the
+  // Content-Type header even for an SSE response, so it cannot gate parsing.
+  if (!response.ok || !response.body) return response;
   const completed = new Map<number, Record<string, unknown>>();
   const started = new Set<number>();
   const encoder = new TextEncoder();
