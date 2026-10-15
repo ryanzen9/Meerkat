@@ -4,6 +4,7 @@ import { BridgeError, publicError } from '../errors';
 import type { ProviderRegistry } from '../providers/registry';
 import { SessionStore } from '../sessions/store';
 import type { ReasoningEffort } from '../../../shared/agentModels';
+import { streamReviewAgent } from './reviewAgent';
 
 export type RunStatus = 'running' | 'completed' | 'cancelled' | 'failed';
 interface Run {
@@ -119,9 +120,9 @@ export class BridgeRuntime {
             return;
           }
           combined.throwIfAborted();
-          opening ??= provider
-            .run(session.provider, text, combined, reasoningEffort)
-            .then((source) => source.getReader());
+          opening ??= streamReviewAgent(provider, session, text, combined, reasoningEffort).then(
+            (source) => source.getReader(),
+          );
           reader ??= await opening;
           const next = await reader.read();
           if (terminal) return;
@@ -172,13 +173,12 @@ export class BridgeRuntime {
     await Promise.all(active.map((r) => r.ended));
   }
   async deleteSession(id: string): Promise<void> {
-    const session = this.sessions.get(id);
+    this.sessions.get(id);
     const active = [...this.runs.values()].find((r) => r.sessionId === id && !r.settled);
     if (active) {
       active.controller.abort();
       await active.ended;
     }
-    await this.registry.get(session.providerId).deleteSession(session.provider);
     this.sessions.delete(id);
   }
   async dispose(): Promise<void> {

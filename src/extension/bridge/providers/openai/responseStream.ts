@@ -4,14 +4,15 @@ import { isRecord } from '../../../../shared/protocol';
 import { BridgeError } from '../../errors';
 
 // ChatGPT plan usage can emit complete output_item.done events but leave the
-// terminal response.output empty (observed with gpt-6.1-sol). The Agents SDK
-// uses that terminal output to finish its loop and commit session history.
-export function restoreCompletedOutput(response: Response): Response {
+// terminal response.output empty (observed with gpt-6.1-sol). Normalize the
+// vendor stream before handing it to the official AI SDK Responses Provider.
+export function restoreCompletedOutput(response: Response, verifyCompletion = false): Response {
   // planFetch already requires stream:true. The Extension Host can omit the
   // Content-Type header even for an SSE response, so it cannot gate parsing.
   if (!response.ok || !response.body) return response;
   const completed = new Map<number, Record<string, unknown>>();
   const started = new Set<number>();
+  let finished = false;
   const encoder = new TextEncoder();
   const stream = response.body
     .pipeThrough(new TextDecoderStream())
@@ -27,6 +28,36 @@ export function restoreCompletedOutput(response: Response): Response {
             /* Preserve [DONE] and invalid payloads for the SDK. */
           }
           if (isRecord(event)) {
+            if (verifyCompletion) {
+              const result = isRecord(event.response) ? event.response : undefined;
+              const failure = result && isRecord(result.error) ? result.error : undefined;
+              if (failure?.code === 'subscription_sharing_usage_limit_exceeded')
+                throw new BridgeError(
+                  'chatgpt_usage_limit',
+                  'ChatGPT plan usage limit reached. Retry after your allowance resets.',
+                  429,
+                );
+              if (failure?.code === 'subscription_sharing_usage_unavailable')
+                throw new BridgeError(
+                  'chatgpt_usage_unavailable',
+                  'ChatGPT usage availability is temporarily unavailable. Please retry later.',
+                  503,
+                );
+              if (
+                event.type === 'response.failed' ||
+                event.type === 'response.incomplete' ||
+                event.type === 'error' ||
+                result?.status === 'failed' ||
+                result?.status === 'incomplete' ||
+                failure
+              )
+                throw new BridgeError(
+                  'inference_incomplete',
+                  'OpenAI inference failed or ended incompletely. Please retry.',
+                  502,
+                );
+              if (event.type === 'response.completed') finished = true;
+            }
             if (event.type === 'response.created') {
               completed.clear();
               started.clear();
@@ -47,7 +78,7 @@ export function restoreCompletedOutput(response: Response): Response {
             if (
               event.type === 'response.completed' &&
               isRecord(event.response) &&
-              // The terminal event is authoritative, as in the Agents SDK.
+              // The terminal event is authoritative.
               // Do not depend on a redundant status field to end the turn.
               event.response.status !== 'failed' &&
               event.response.status !== 'incomplete' &&
@@ -81,9 +112,18 @@ export function restoreCompletedOutput(response: Response): Response {
           ];
           output.enqueue(encoder.encode(lines.join('\n')));
         },
+        flush() {
+          if (verifyCompletion && !finished)
+            throw new BridgeError(
+              'inference_incomplete',
+              'Inference stream ended before response.completed.',
+              502,
+            );
+        },
       }),
     );
   const headers = new Headers(response.headers);
+  headers.set('content-type', 'text/event-stream');
   headers.delete('content-length');
   headers.delete('content-encoding');
   return new Response(stream, {

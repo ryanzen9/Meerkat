@@ -87,7 +87,7 @@ F5 结束后，开发任务可能继续监听；可通过 `Tasks: Terminate Task
 └── vite.config.ts          # Vite Library Mode，Node / CommonJS
 ```
 
-两端分别声明依赖，共享根目录的 Bun 锁文件。根 `package.json` 只保留 Host / Shared 所需运行依赖以及构建、打包、lint、格式化等公共开发工具；React、assistant-ui、Tailwind、前端 Vite 插件、DOM 测试工具均在 `webview/package.json` 中维护。Bun 负责依赖管理、脚本执行和开发构建编排，Host 与 Webview 都由 Vite 8 打包。Host 使用 Library Mode，目标为 Node 20 语法，`vscode` 与所有 Node 内置模块设为 external；Host 的官方 Agents SDK、OpenAI Client 与 OAuth 依赖全部打包为本地 CommonJS chunks。Webview 使用普通浏览器构建，React 完全打包，构建时禁止导入 Node、Bun 或 VS Code API。两端 `package.json` 的 `type: module` 用于工程配置和脚本，Host 入口明确使用 `.cjs`。
+两端分别声明依赖，共享根目录的 Bun 锁文件。根 `package.json` 只保留 Host / Shared 所需运行依赖以及构建、打包、lint、格式化等公共开发工具；React、assistant-ui、Tailwind、前端 Vite 插件、DOM 测试工具均在 `webview/package.json` 中维护。Bun 负责依赖管理、脚本执行和开发构建编排，Host 与 Webview 都由 Vite 8 打包。Host 使用 Library Mode，目标为 Node 20 语法，`vscode` 与所有 Node 内置模块设为 external；Host 的Vercel AI SDK、OpenAI Provider 与 OAuth 依赖全部打包为本地 CommonJS chunks。Webview 使用普通浏览器构建，React 完全打包，构建时禁止导入 Node、Bun 或 VS Code API。两端 `package.json` 的 `type: module` 用于工程配置和脚本，Host 入口明确使用 `.cjs`。
 
 前端可以在 `webview/` 中直接执行 `bun run build`、`bun run dev`、`bun run typecheck`、`bun run test`。前端构建输出到仓库的 `dist/webview/`，由扩展直接加载并纳入 VSIX。前端通过 `@/*` 引用自身 `src/`，通过 `@shared/*` 引用根目录 `src/shared/`；新增 shadcn / assistant-ui 组件时也在 `webview/` 中运行 CLI，使组件和依赖归入前端工程。
 
@@ -104,7 +104,7 @@ HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview
 - **History**：恢复已有会话并回到 Chat；输入区的加号新建会话。草稿、选中标签、仓库和最近 20 个会话（每个最多 100 条消息）通过 VS Code Webview state 保存，输入上限 4000 字符。
 - **更多操作**：打开扩展设置、会话历史或将当前会话作为未保存的 Markdown 文档打开，可自行保存导出。
 
-**已接入 ChatGPT OAuth 与 OpenAI Agents SDK。** 点击 Continue with ChatGPT 完成动态注册，选择账户可用模型后发送消息，支持真实流式文本、本地 Function Tool、多轮会话和停止运行。webview 通过 Host 代理消费官方 AI SDK UI Message Stream，不持有 Provider 或本地 HTTP 凭据。PR 服务仍未接入。完整架构、HTTP API、首次授权与真实账户验收见 [Agent Bridge 文档](docs/agent-bridge.md)。Host 重启后须新建 Agent 会话；现有 webview 历史保留文字摘要。可选 `PanelSnapshot.review` 元数据支持 PR 编号和 Idle / Analyzing… / Issues / Ready 徽章，仅对匹配的仓库显示；没有该元数据时使用真实工作区名和 Idle 状态。
+**已接入 ChatGPT OAuth 与 Vercel AI SDK ToolLoopAgent。** 点击 Continue with ChatGPT 完成动态注册，选择账户可用模型后发送消息，支持真实流式文本、本地 Function Tool、多轮会话和停止运行。webview 通过 Host 代理消费官方 AI SDK UI Message Stream，不持有 Provider 或本地 HTTP 凭据。PR 服务仍未接入。完整架构、HTTP API、首次授权与真实账户验收见 [Agent Bridge 文档](docs/agent-bridge.md)。Host 重启后须新建 Agent 会话；现有 webview 历史保留文字摘要。可选 `PanelSnapshot.review` 元数据支持 PR 编号和 Idle / Analyzing… / Issues / Ready 徽章，仅对匹配的仓库显示；没有该元数据时使用真实工作区名和 Idle 状态。
 
 ## 消息协议
 

@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { ProviderRegistry } from '../src/extension/bridge/providers/registry';
-import { OpenAIAgentsProvider } from '../src/extension/bridge/providers/openai/provider';
+import { OpenAIChatGPTProvider } from '../src/extension/bridge/providers/openai/provider';
 import { BridgeRuntime } from '../src/extension/bridge/runtime/bridgeRuntime';
 import { createBridgeApi } from '../src/extension/bridge/server/api';
 import { BridgeHttpServer } from '../src/extension/bridge/server/httpServer';
@@ -21,7 +21,7 @@ function setup(http?: HttpFetch, timeoutMs?: number) {
       : http
         ? http(url, init)
         : sse(responseEvents('Hello'));
-  registry.register(() => new OpenAIAgentsProvider(signedInAuth(), models));
+  registry.register(() => new OpenAIChatGPTProvider(signedInAuth(), models));
   const runtime = new BridgeRuntime(registry, timeoutMs);
   const api = createBridgeApi({
     runtime,

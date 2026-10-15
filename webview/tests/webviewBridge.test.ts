@@ -1,9 +1,9 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { Window } from 'happy-dom';
-import type { UIMessageChunk } from 'ai';
+import { MockLanguageModelV4 } from 'ai/test';
 import type {
-  AgentProvider,
+  ModelProvider,
   AccountStatus,
   ProviderSession,
 } from '../../src/extension/bridge/providers/types';
@@ -18,6 +18,19 @@ import type {
 } from '../../src/shared/protocol';
 import { createSession, appendTurn, restoreReviewState } from '../src/state/reviewState';
 import type { AgentModel, ReasoningEffort } from '../../src/shared/agentModels';
+
+type TestModelChunk =
+  Awaited<ReturnType<MockLanguageModelV4['doStream']>>['stream'] extends ReadableStream<infer T>
+    ? T
+    : never;
+const finishChunk = (reason: 'stop' | 'tool-calls'): TestModelChunk => ({
+  type: 'finish',
+  finishReason: { unified: reason, raw: undefined },
+  usage: {
+    inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+    outputTokens: { total: 1, text: 1, reasoning: undefined },
+  },
+});
 
 // The production App, React hooks, AI SDK, IPC proxy, routes, Runtime and SessionStore
 // run unchanged. Only the remote provider/browser/VS Code shell are test fixtures.
@@ -41,6 +54,8 @@ class TestHost {
     { id: 'model-b', name: 'Model B', supportedReasoningEfforts: [] },
   ];
   modelFailure = false;
+  modelGate: Promise<AgentModel[]> | undefined;
+  modelRequests = 0;
   includeTool = false;
   responseText?: string;
   deleteFailures = 0;
@@ -49,7 +64,7 @@ class TestHost {
   savedState: unknown;
   savedWrites = 0;
   holdStream = false;
-  streamOutput?: ReadableStreamDefaultController<UIMessageChunk>;
+  streamOutput?: ReadableStreamDefaultController<TestModelChunk>;
   streamId = '';
   creations: ProviderSession[] = [];
   runs: { model: string; text: string; reasoningEffort?: ReasoningEffort }[] = [];
@@ -58,7 +73,7 @@ class TestHost {
   runtime: BridgeRuntime;
   proxy: WebviewBridgeProxy;
   constructor() {
-    const provider: AgentProvider = {
+    const provider: ModelProvider = {
       info: {
         id: 'openai-agents',
         name: 'Test provider',
@@ -83,70 +98,94 @@ class TestHost {
         return { remoteRevocationConfirmed: true };
       },
       listModels: async () => {
+        this.modelRequests++;
         if (this.modelFailure)
           throw new BridgeError('models_unavailable', 'Model catalog unavailable', 502);
+        if (this.modelGate) return this.modelGate;
         return this.models;
       },
       createSession: async (model) => {
         if (!this.status.authenticated)
           throw new BridgeError('sign_in_required', 'Sign in first', 401);
-        const session = { model, accountId: this.status.activeAccountId!, state: {} };
+        const selected = this.models.find((item) => item.id === model)!;
+        const session = {
+          model,
+          accountId: this.status.activeAccountId!,
+          supportedReasoningEfforts: selected.supportedReasoningEfforts,
+          ...(selected.defaultReasoningEffort !== undefined
+            ? { defaultReasoningEffort: selected.defaultReasoningEffort }
+            : {}),
+        };
         this.creations.push(session);
         return session;
       },
-      run: async (session, text, signal, reasoningEffort) => {
+      resolveModel: async (session, signal, reasoningEffort) => {
         signal.throwIfAborted();
-        this.runs.push({
-          model: session.model,
-          text,
-          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-        });
-        const id = randomUUID();
-        const chunks: UIMessageChunk[] = [
-          { type: 'start', messageId: id },
-          { type: 'text-start', id },
-          {
-            type: 'text-delta',
-            id,
-            delta: this.responseText ?? `answer:${session.model}:${this.runs.length}`,
-          },
-          { type: 'text-end', id },
-          { type: 'finish', finishReason: 'stop' },
-        ];
-        if (this.includeTool) {
-          chunks.splice(
-            1,
-            0,
-            {
-              type: 'tool-input-available',
-              toolCallId: 'inspect-call',
-              toolName: 'inspect_text',
-              input: { text },
-            },
-            { type: 'tool-output-available', toolCallId: 'inspect-call', output: { todos: 1 } },
-          );
-          chunks.splice(
-            chunks.length - 1,
-            0,
-            { type: 'text-start', id: `${id}-second` },
-            { type: 'text-delta', id: `${id}-second`, delta: 'Additional explanation.' },
-            { type: 'text-end', id: `${id}-second` },
-          );
-        }
-        return new ReadableStream<UIMessageChunk>({
-          start: (output) => {
-            if (this.holdStream) {
-              this.streamOutput = output;
-              this.streamId = id;
-              chunks.slice(0, 3).forEach((chunk) => output.enqueue(chunk));
-              return;
+        let step = 0;
+        const model = new MockLanguageModelV4({
+          modelId: session.model,
+          doStream: async ({ prompt }) => {
+            step++;
+            const text = prompt
+              .filter((message) => message.role === 'user')
+              .at(-1)!
+              .content.filter((part) => part.type === 'text')
+              .map((part) => part.text)
+              .join('');
+            if (step === 1)
+              this.runs.push({
+                model: session.model,
+                text,
+                ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+              });
+            const id = randomUUID();
+            const chunks: TestModelChunk[] = [];
+            if (this.includeTool && step === 1) {
+              chunks.push(
+                {
+                  type: 'tool-call',
+                  toolCallId: 'inspect-call',
+                  toolName: 'inspect_text',
+                  input: JSON.stringify({ text }),
+                },
+                finishChunk('tool-calls'),
+              );
+            } else {
+              chunks.push(
+                { type: 'text-start', id },
+                {
+                  type: 'text-delta',
+                  id,
+                  delta: this.responseText ?? `answer:${session.model}:${this.runs.length}`,
+                },
+                { type: 'text-end', id },
+              );
+              if (this.includeTool)
+                chunks.push(
+                  { type: 'text-start', id: `${id}-second` },
+                  { type: 'text-delta', id: `${id}-second`, delta: 'Additional explanation.' },
+                  { type: 'text-end', id: `${id}-second` },
+                );
+              chunks.push(finishChunk('stop'));
             }
-            chunks.forEach((chunk) => output.enqueue(chunk));
-            output.close();
+            return {
+              stream: new ReadableStream<TestModelChunk>({
+                start: (output) => {
+                  if (this.holdStream) {
+                    this.streamOutput = output;
+                    this.streamId = id;
+                    chunks.slice(0, 2).forEach((chunk) => output.enqueue(chunk));
+                    return;
+                  }
+                  chunks.forEach((chunk) => output.enqueue(chunk));
+                  output.close();
+                },
+              }),
+            };
           },
         });
+        return { model };
       },
-      deleteSession: async () => {},
       dispose: async () => {},
     };
     const registry = new ProviderRegistry();
@@ -327,6 +366,100 @@ async function chooseModel(view: View, name: string) {
   fireEvent.click(await view.findByRole('option', { name }));
 }
 
+for (const outcome of ['available', 'empty', 'failure'] as const) {
+  test(`initial model catalog ${outcome} waits before validating a restored session`, async () => {
+    const bound = host.runtime.sessions.create('openai-agents', {
+      model: 'model-b',
+      accountId: 'account-a',
+    });
+    const local = {
+      ...createSession(),
+      bridgeSessionId: bound.id,
+      model: 'model-b',
+      accountId: 'account-a',
+    };
+    host.savedState = restoreReviewState({ sessions: [local], activeSessionId: local.id });
+    let resolve!: (catalog: AgentModel[]) => void;
+    let reject!: (error: Error) => void;
+    host.modelGate = new Promise((done, fail) => {
+      resolve = done;
+      reject = fail;
+    });
+    const view = mount();
+    await waitFor(() => expect(host.modelRequests).toBeGreaterThan(0));
+    const selector = view.getByRole('combobox', { name: '选择 AI 模型' }) as HTMLButtonElement;
+    expect(view.getByText('正在加载模型…')).toBeDefined();
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(selector.textContent).not.toContain('不可用');
+    expect(selector.disabled).toBe(true);
+    const input = view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'draft while loading' } });
+    expect((view.getByRole('button', { name: '发送消息' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(input.value).toBe('draft while loading');
+    expect(host.runs).toHaveLength(0);
+    expect(host.creations).toHaveLength(0);
+
+    await act(async () => {
+      if (outcome === 'failure')
+        reject(new BridgeError('models_unavailable', 'Model catalog unavailable', 502));
+      else resolve(outcome === 'empty' ? [] : host.models);
+      await host.settle();
+    });
+    expect(view.queryByText('正在加载模型…')).toBeNull();
+    if (outcome === 'available') {
+      expect(view.queryByRole('alert')).toBeNull();
+      expect(selector.textContent).toContain('Model B');
+      await send(view, 'follow-up after loading');
+      await answered(view, 1);
+      expect(host.runs[0]!.model).toBe('model-b');
+    } else if (outcome === 'empty') {
+      expect(view.getByRole('alert').textContent).toContain('模型在当前账户中不可用');
+      expect(selector.textContent).toContain('当前账户不可用');
+    } else {
+      expect(view.getByRole('alert').textContent).toContain('Model catalog unavailable');
+      expect(selector.textContent).not.toContain('不可用');
+      expect((view.getByRole('button', { name: '发送消息' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      );
+      host.modelGate = undefined;
+      fireEvent.click(view.getByRole('button', { name: '重新加载模型' }));
+      await connected(view);
+      expect(view.queryByRole('alert')).toBeNull();
+      expect(input.value).toBe('draft while loading');
+      await send(view, 'retry after catalog failure');
+      await answered(view, 1);
+    }
+  });
+}
+
+test('a late model catalog cannot restore readiness after logout', async () => {
+  let resolve!: (catalog: AgentModel[]) => void;
+  host.modelGate = new Promise((done) => {
+    resolve = done;
+  });
+  const view = mount();
+  await waitFor(() => expect(host.modelRequests).toBeGreaterThan(0));
+  fireEvent.click(view.getByRole('button', { name: '登出' }));
+  await waitFor(() =>
+    expect(view.getByRole('button', { name: 'Continue with ChatGPT' })).toBeDefined(),
+  );
+  await act(async () => {
+    resolve(host.models);
+    await host.settle();
+  });
+  expect((view.getByRole('combobox', { name: '选择 AI 模型' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
+    target: { value: 'keep draft' },
+  });
+  expect((view.getByRole('button', { name: '发送消息' }) as HTMLButtonElement).disabled).toBe(true);
+  expect(view.queryByRole('alert')).toBeNull();
+});
+
 test('Thinking uses returned efforts and defaults, persists per session, and reaches each turn', async () => {
   const view = mount();
   await connected(view);
@@ -398,7 +531,7 @@ test('assistant-ui Thread keeps Bridge tool output and copies the full assistant
   fireEvent.click(view.getByRole('button', { name: '1 tool call' }));
   fireEvent.click(view.getByRole('button', { name: 'Used tool: inspect_text' }));
   expect(assistant?.querySelector('[data-slot="tool-fallback-result"]')?.textContent).toContain(
-    '"todos": 1',
+    'lineCount',
   );
   await act(async () => {
     fireEvent.click(view.getByRole('button', { name: '复制回复' }));
@@ -608,7 +741,7 @@ test('streamed deltas render live with bounded persistence and flush the complet
   await delta(view, ' final');
   await act(async () => {
     host.streamOutput!.enqueue({ type: 'text-end', id: host.streamId });
-    host.streamOutput!.enqueue({ type: 'finish', finishReason: 'stop' });
+    host.streamOutput!.enqueue(finishChunk('stop'));
     host.streamOutput!.close();
     await host.settle();
   });
@@ -765,7 +898,6 @@ for (const unavailable of ['model', 'account'] as const) {
     const providerSession = {
       model: 'model-b',
       accountId: unavailable === 'account' ? 'account-other' : 'account-a',
-      state: {},
     };
     const bound = host.runtime.sessions.create('openai-agents', providerSession);
     const local = {
@@ -815,7 +947,6 @@ test('failed eviction deletion survives reload and retries; already missing Host
     const bound = host.runtime.sessions.create('openai-agents', {
       model: 'model-a',
       accountId: 'account-a',
-      state: {},
     });
     const local = {
       ...createSession(),

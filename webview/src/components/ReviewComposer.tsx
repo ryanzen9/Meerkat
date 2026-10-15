@@ -1,10 +1,24 @@
-import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react';
-import { createContext, useContext, useEffect, useEffectEvent, useMemo, useState } from 'react';
-import { Icon } from './Icon';
-import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
-import { OpenAILogo } from './assistant-ui/elements/logos';
+import { ComposerPrimitive, useAui, useAuiState } from "@assistant-ui/react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useState,
+} from "react";
+import { Icon } from "./Icon";
+import { OpenAILogo } from "./assistant-ui/elements/logos";
+import {
+  ModelSelector,
+  type ModelOption,
+} from "./assistant-ui/elements/model-selector.aui";
 
-import { isReasoningEffort, type AgentModel, type ReasoningEffort } from '@shared/agentModels';
+import {
+  isReasoningEffort,
+  type AgentModel,
+  type ReasoningEffort,
+} from "@shared/agentModels";
 
 export interface ReviewComposerState {
   sessionId: string;
@@ -12,6 +26,8 @@ export interface ReviewComposerState {
   onDraftChange(draft: string): void;
   onNew(): void;
   models: readonly AgentModel[];
+  modelsReady: boolean;
+  modelsLoading: boolean;
   reasoningEffort: ReasoningEffort | undefined;
   onReasoningEffortChange(effort: ReasoningEffort): void;
   model: string;
@@ -19,21 +35,30 @@ export interface ReviewComposerState {
   onModelChange(model: string): void;
 }
 
-export const ReviewComposerContext = createContext<ReviewComposerState | null>(null);
+export const ReviewComposerContext = createContext<ReviewComposerState | null>(
+  null,
+);
 
 const EFFORT_LABELS: Record<ReasoningEffort, string> = {
-  none: 'Off',
-  minimal: 'Min',
-  low: 'Low',
-  medium: 'Med',
-  high: 'High',
-  xhigh: 'XHigh',
-  max: 'Max',
+  none: "Off",
+  minimal: "Min",
+  low: "Low",
+  medium: "Med",
+  high: "High",
+  xhigh: "XHigh",
+  max: "Max",
 };
 
 export function ReviewModelSelector() {
-  const { models, model, modelDisabled, onModelChange, reasoningEffort, onReasoningEffortChange } =
-    useContext(ReviewComposerContext)!;
+  const {
+    models,
+    modelsReady,
+    model,
+    modelDisabled,
+    onModelChange,
+    reasoningEffort,
+    onReasoningEffortChange,
+  } = useContext(ReviewComposerContext)!;
   const [open, setOpen] = useState(false);
   const options = useMemo(() => {
     const available: ModelOption[] = models.map((item) => ({
@@ -49,33 +74,38 @@ export function ReviewModelSelector() {
       ? [
           {
             id: model,
-            name: `${model}（当前账户不可用）`,
-            icon: <OpenAILogo />,
+            name: modelsReady ? `${model}（当前账户不可用）` : model,
             disabled: true,
           },
           ...available,
         ]
       : available;
-  }, [models, model]);
+  }, [models, modelsReady, model]);
   return (
     <ModelSelector
       models={options}
       value={model}
-      effort={reasoningEffort ?? ''}
+      effort={reasoningEffort ?? ""}
       onEffortChange={(value) => {
         if (
           !modelDisabled &&
           isReasoningEffort(value) &&
           models
             .find(({ id }) => id === model)
-            ?.supportedReasoningEfforts.some((option) => option.reasoningEffort === value)
+            ?.supportedReasoningEfforts.some(
+              (option) => option.reasoningEffort === value,
+            )
         )
           onReasoningEffortChange(value);
       }}
       open={!modelDisabled && open}
       onOpenChange={setOpen}
       onValueChange={(value) => {
-        if (!modelDisabled && value !== model && models.some(({ id }) => id === value))
+        if (
+          !modelDisabled &&
+          value !== model &&
+          models.some(({ id }) => id === value)
+        )
           onModelChange(value);
       }}
       disabled={modelDisabled || !models.length}
@@ -90,7 +120,9 @@ export function ReviewModelSelector() {
 }
 
 export function ReviewComposerInput({ autoFocus }: { autoFocus: boolean }) {
-  const { sessionId, draft, onDraftChange } = useContext(ReviewComposerContext)!;
+  const { sessionId, draft, onDraftChange } = useContext(
+    ReviewComposerContext,
+  )!;
   const aui = useAui();
   const readDraft = useEffectEvent(() => draft);
   const saveDraft = useEffectEvent(onDraftChange);
@@ -122,12 +154,16 @@ export function ReviewComposerInput({ autoFocus }: { autoFocus: boolean }) {
 }
 
 export function ReviewComposerFooter() {
-  const { onNew } = useContext(ReviewComposerContext)!;
+  const { onNew, modelsLoading } = useContext(ReviewComposerContext)!;
   const text = useAuiState((state) => state.composer.text);
   return (
     <div className="mt-1.5 flex min-w-0 items-center justify-between gap-2 text-[0.7rem] text-muted">
-      <span id="composer-hint" className="truncate">
-        {text.length === 4000 ? '已达到 4000 字符上限' : 'Enter 发送 · Shift+Enter 换行'}
+      <span id="composer-hint" className="truncate" aria-live="polite">
+        {modelsLoading
+          ? "正在加载模型…"
+          : text.length === 4000
+            ? "已达到 4000 字符上限"
+            : "Enter 发送 · Shift+Enter 换行"}
       </span>
       <button
         type="button"

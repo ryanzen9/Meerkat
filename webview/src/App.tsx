@@ -127,6 +127,17 @@ export function App() {
                 className="shrink-0 border-b border-error/30 px-3 py-2 text-[0.85rem] text-error"
               >
                 {connection.error || chat.error}
+                {connection.modelsFailed && (
+                  <button
+                    type="button"
+                    className="ml-2 text-link"
+                    onClick={() => {
+                      void connection.retryModels();
+                    }}
+                  >
+                    重新加载模型
+                  </button>
+                )}
               </p>
             )}
             <section
@@ -145,10 +156,14 @@ export function App() {
                 onDraftChange={chat.setDraft}
                 onNew={chat.newSession}
                 models={connection.models}
+                modelsReady={connection.modelsReady}
+                modelsLoading={connection.modelsLoading}
                 reasoningEffort={chat.reasoningEffort}
                 onReasoningEffortChange={chat.setReasoningEffort}
                 model={chat.model}
-                modelDisabled={!connection.authenticated || chat.isRunning}
+                modelDisabled={
+                  !connection.authenticated || !connection.modelsReady || chat.isRunning
+                }
                 onModelChange={(model) => {
                   connection.setModel(model);
                   chat.newSession();

@@ -1,6 +1,7 @@
+import { agentHarness } from './bridgeFixture';
 import { expect, test } from 'bun:test';
 import type { UIMessageChunk } from 'ai';
-import { OpenAIAgentsProvider } from '../src/extension/bridge/providers/openai/provider';
+import { OpenAIChatGPTProvider } from '../src/extension/bridge/providers/openai/provider';
 import { restoreCompletedOutput } from '../src/extension/bridge/providers/openai/responseStream';
 import { responseEvents, signedInAuth, sse } from './bridgeFixture';
 
@@ -42,19 +43,21 @@ for (const terminalStatus of ['completed', undefined, 'in_progress']) {
   for (const contentType of [true, false]) {
     test(`a streamed greeting with empty output, ${terminalStatus ?? 'missing'} status and ${contentType ? 'present' : 'missing'} content-type makes one inference and preserves complete multi-turn history`, async () => {
       const bodies: Record<string, unknown>[] = [];
-      const provider = new OpenAIAgentsProvider(signedInAuth(), async (url, init) => {
-        if (String(url).endsWith('/models')) return models();
-        bodies.push(JSON.parse(init!.body as string));
-        const response = sse(
-          missingTerminalOutput(responseEvents(`answer-${bodies.length}`)).map((event) =>
-            event.type === 'response.completed'
-              ? { ...event, response: { ...(event.response as object), status: terminalStatus } }
-              : event,
-          ),
-        );
-        if (!contentType) response.headers.delete('content-type');
-        return response;
-      });
+      const provider = agentHarness(
+        new OpenAIChatGPTProvider(signedInAuth(), async (url, init) => {
+          if (String(url).endsWith('/models')) return models();
+          bodies.push(JSON.parse(init!.body as string));
+          const response = sse(
+            missingTerminalOutput(responseEvents(`answer-${bodies.length}`)).map((event) =>
+              event.type === 'response.completed'
+                ? { ...event, response: { ...(event.response as object), status: terminalStatus } }
+                : event,
+            ),
+          );
+          if (!contentType) response.headers.delete('content-type');
+          return response;
+        }),
+      );
       const signal = new AbortController().signal;
       const session = await provider.createSession('fixture-model', signal);
       try {
@@ -79,27 +82,29 @@ for (const terminalStatus of ['completed', undefined, 'in_progress']) {
 
 test('missing terminal output still executes a Function Tool and stops after its answer', async () => {
   const bodies: Record<string, unknown>[] = [];
-  const provider = new OpenAIAgentsProvider(signedInAuth(), async (url, init) => {
-    if (String(url).endsWith('/models')) return models();
-    bodies.push(JSON.parse(init!.body as string));
-    const events =
-      bodies.length === 1
-        ? responseEvents('', [
-            {
-              id: 'fc_fixture',
-              type: 'function_call',
-              call_id: 'call_fixture',
-              name: 'inspect_text',
-              namespace: 'review',
-              arguments: JSON.stringify({ text: '// TODO: inspect' }),
-              status: 'completed',
-            },
-          ])
-        : responseEvents('Inspected');
-    const response = sse(missingTerminalOutput(events));
-    response.headers.delete('content-type');
-    return response;
-  });
+  const provider = agentHarness(
+    new OpenAIChatGPTProvider(signedInAuth(), async (url, init) => {
+      if (String(url).endsWith('/models')) return models();
+      bodies.push(JSON.parse(init!.body as string));
+      const events =
+        bodies.length === 1
+          ? responseEvents('', [
+              {
+                id: 'fc_fixture',
+                type: 'function_call',
+                call_id: 'call_fixture',
+                name: 'inspect_text',
+                namespace: 'review',
+                arguments: JSON.stringify({ text: '// TODO: inspect' }),
+                status: 'completed',
+              },
+            ])
+          : responseEvents('Inspected');
+      const response = sse(missingTerminalOutput(events));
+      response.headers.delete('content-type');
+      return response;
+    }),
+  );
   const signal = new AbortController().signal;
   const session = await provider.createSession('fixture-model', signal);
   try {
@@ -119,26 +124,28 @@ test('missing terminal output still executes a Function Tool and stops after its
 for (const mode of ['missing', 'unfinished-sibling']) {
   test(`empty terminal output with ${mode} items fails once without committing partial history`, async () => {
     let calls = 0;
-    const provider = new OpenAIAgentsProvider(signedInAuth(), async (url) => {
-      if (String(url).endsWith('/models')) return models();
-      calls++;
-      const events = missingTerminalOutput(
-        responseEvents('partial').filter((event) => event.type !== 'response.output_item.done'),
-      );
-      if (mode === 'unfinished-sibling')
-        events.splice(-1, 0, {
-          type: 'response.output_item.done',
-          output_index: 1,
-          item: { id: 'rs_fixture', type: 'reasoning', summary: [] },
-        });
-      return sse(events);
-    });
+    const provider = agentHarness(
+      new OpenAIChatGPTProvider(signedInAuth(), async (url) => {
+        if (String(url).endsWith('/models')) return models();
+        calls++;
+        const events = missingTerminalOutput(
+          responseEvents('partial').filter((event) => event.type !== 'response.output_item.done'),
+        );
+        if (mode === 'unfinished-sibling')
+          events.splice(-1, 0, {
+            type: 'response.output_item.done',
+            output_index: 1,
+            item: { id: 'rs_fixture', type: 'reasoning', summary: [] },
+          });
+        return sse(events);
+      }),
+    );
     const signal = new AbortController().signal;
     const session = await provider.createSession('fixture-model', signal);
     try {
       await expect(chunks(await provider.run(session, 'hello', signal))).rejects.toThrow();
       expect(calls).toBe(1);
-      expect(await (session.state as { getItems(): Promise<unknown[]> }).getItems()).toEqual([]);
+      expect(session.history.getMessages()).toEqual([]);
     } finally {
       await provider.deleteSession(session);
       await provider.dispose();

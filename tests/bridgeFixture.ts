@@ -1,3 +1,24 @@
+import type { ModelProvider } from '../src/extension/bridge/providers/types';
+import { SessionStore, type BridgeSession } from '../src/extension/bridge/sessions/store';
+import { streamReviewAgent } from '../src/extension/bridge/runtime/reviewAgent';
+import type { ReasoningEffort } from '../src/shared/agentModels';
+
+export function agentHarness(provider: ModelProvider) {
+  const sessions = new SessionStore();
+  return {
+    listModels: (signal: AbortSignal) => provider.listModels(signal),
+    async createSession(model: string, signal: AbortSignal) {
+      return sessions.create(provider.info.id, await provider.createSession(model, signal));
+    },
+    run: (session: BridgeSession, text: string, signal: AbortSignal, effort?: ReasoningEffort) =>
+      streamReviewAgent(provider, session, text, signal, effort),
+    async deleteSession(session: BridgeSession) {
+      sessions.delete(session.id);
+    },
+    dispose: () => provider.dispose(),
+  };
+}
+
 import { ChatGPTAuth, CHATGPT_ISSUER } from '../src/extension/bridge/auth/chatgpt';
 import type { Exclusive, SecretStore } from '../src/extension/bridge/auth/storage';
 

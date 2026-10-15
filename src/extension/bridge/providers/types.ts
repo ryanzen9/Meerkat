@@ -1,4 +1,4 @@
-import type { UIMessageChunk } from 'ai';
+import type { LanguageModel, Tool, ToolLoopAgentSettings } from 'ai';
 import type {
   AgentModel,
   ReasoningEffort,
@@ -26,11 +26,19 @@ export interface ProviderInfo {
 export interface ProviderSession {
   accountId: string;
   model: string;
-  state: unknown;
   supportedReasoningEfforts?: SupportedReasoningEffort[];
   defaultReasoningEffort?: ReasoningEffort;
 }
-export interface AgentProvider {
+// Provider adapters supply models and vendor options. Agent execution, tools,
+// history and the UI protocol are owned by the shared AI SDK runtime.
+export interface ModelConfiguration extends Pick<
+  ToolLoopAgentSettings,
+  'model' | 'providerOptions'
+> {
+  model: Exclude<LanguageModel, string>;
+  toolProviderOptions?: Tool['providerOptions'];
+}
+export interface ModelProvider {
   readonly info: ProviderInfo;
   initialize(): Promise<void>;
   authStatus(): Promise<AccountStatus>;
@@ -39,13 +47,11 @@ export interface AgentProvider {
   logout(): Promise<{ remoteRevocationConfirmed: boolean }>;
   listModels(signal: AbortSignal): Promise<AgentModel[]>;
   createSession(model: string, signal: AbortSignal): Promise<ProviderSession>;
-  run(
+  resolveModel(
     session: ProviderSession,
-    text: string,
     signal: AbortSignal,
     reasoningEffort?: ReasoningEffort,
-  ): Promise<ReadableStream<UIMessageChunk>>;
-  deleteSession(session: ProviderSession): Promise<void>;
+  ): Promise<ModelConfiguration>;
   dispose(): Promise<void>;
 }
-export type AgentProviderFactory = () => AgentProvider;
+export type ModelProviderFactory = () => ModelProvider;

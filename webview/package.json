@@ -17,7 +17,7 @@
     "@assistant-ui/react": "0.15.28",
     "@assistant-ui/react-markdown": "0.14.22",
     "@assistant-ui/react-syntax-highlighter": "0.14.7",
-    "ai": "7.0.140",
+    "ai": "7.0.141",
     "class-variance-authority": "0.7.1",
     "cmdk": "1.1.1",
     "cn": "0.4.0",

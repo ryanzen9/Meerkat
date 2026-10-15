@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { ChatGPTAuth } from './auth/chatgpt';
 import { fileMutex } from './auth/storage';
-import { OpenAIAgentsProvider } from './providers/openai/provider';
+import { OpenAIChatGPTProvider } from './providers/openai/provider';
 import { ProviderRegistry } from './providers/registry';
 import { BridgeRuntime } from './runtime/bridgeRuntime';
 import { createBridgeApi } from './server/api';
@@ -55,7 +55,7 @@ export class BridgeService implements vscode.Disposable {
       secrets: this.context.secrets,
       exclusive: fileMutex(join(this.context.globalStorageUri.fsPath, 'oauth.lock')),
     });
-    registry.register(() => new OpenAIAgentsProvider(auth));
+    registry.register(() => new OpenAIChatGPTProvider(auth));
     this.runtime = new BridgeRuntime(registry);
     await registry.initialize();
     let baseUrl = '';

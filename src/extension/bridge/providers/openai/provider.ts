@@ -1,28 +1,16 @@
-import {
-  Agent,
-  OpenAIProvider,
-  Runner,
-  setSensitiveDataLoggingEnabled,
-  type RunStreamEvent,
-} from '@openai/agents';
-import { createAiSdkUiMessageStream } from '@openai/agents-extensions/ai-sdk-ui';
-import { randomUUID } from 'node:crypto';
-import OpenAI from 'openai';
+import { createOpenAI, type OpenAILanguageModelResponsesOptions } from '@ai-sdk/openai';
 import type { ReasoningEffort } from '../../../../shared/agentModels';
-import { isRecord } from '../../../../shared/protocol';
 import { CHATGPT_RESOURCE, ChatGPTAuth } from '../../auth/chatgpt';
 import { BridgeError } from '../../errors';
 import type { HttpFetch } from '../../http';
-import { LocalAgentSession } from '../../sessions/localAgentSession';
-import { reviewTools } from '../../tools/reviewTools';
-import type { AgentProvider, ProviderSession } from '../types';
+import type { ModelProvider, ModelConfiguration, ProviderSession } from '../types';
 import { planFetch } from './compatibility';
 import { parseModelCatalog } from './models';
 
-export class OpenAIAgentsProvider implements AgentProvider {
+export class OpenAIChatGPTProvider implements ModelProvider {
   readonly info = {
     id: 'openai-agents',
-    name: 'OpenAI Agents · ChatGPT',
+    name: 'OpenAI · ChatGPT',
     capabilities: {
       streaming: true,
       functionTools: true,
@@ -35,7 +23,6 @@ export class OpenAIAgentsProvider implements AgentProvider {
     private readonly http: HttpFetch = fetch,
   ) {}
   async initialize(): Promise<void> {
-    setSensitiveDataLoggingEnabled(false);
     await this.auth.status();
   }
   authStatus() {
@@ -89,7 +76,6 @@ export class OpenAIAgentsProvider implements AgentProvider {
     return {
       model,
       accountId: account.id,
-      state: new LocalAgentSession(randomUUID()),
       supportedReasoningEfforts: selected.supportedReasoningEfforts,
       ...(selected.defaultReasoningEffort !== undefined
         ? { defaultReasoningEffort: selected.defaultReasoningEffort }
@@ -97,13 +83,11 @@ export class OpenAIAgentsProvider implements AgentProvider {
     };
   }
 
-  async run(
+  async resolveModel(
     session: ProviderSession,
-    text: string,
     signal: AbortSignal,
     reasoningEffort?: ReasoningEffort,
-  ) {
-    if (!(session.state instanceof LocalAgentSession)) throw new Error('Invalid OpenAI session');
+  ): Promise<ModelConfiguration> {
     const account = await this.auth.credential(session.accountId);
     signal.throwIfAborted();
     const effort = reasoningEffort ?? session.defaultReasoningEffort;
@@ -116,110 +100,28 @@ export class OpenAIAgentsProvider implements AgentProvider {
         'The selected reasoning effort is unavailable for this model.',
         422,
       );
-    const original = session.state;
-    const staged = await original.fork();
-    const client = new OpenAI({
+    const provider = createOpenAI({
       apiKey: account.tokens.accessToken,
       baseURL: CHATGPT_RESOURCE,
-      maxRetries: 0,
-      timeout: 120000,
-      logLevel: 'off',
-      fetch: planFetch(this.http, () => this.auth.invalidate(account.id)),
+      // Bun test types add a static preconnect member; the SDK uses callable fetch.
+      fetch: planFetch(this.http, () => this.auth.invalidate(account.id)) as typeof fetch,
     });
-    const provider = new OpenAIProvider({
-      openAIClient: client,
-      useResponses: true,
-    });
-    const runner = new Runner({
-      modelProvider: provider,
-      tracingDisabled: true,
-      traceIncludeSensitiveData: false,
-    });
-    const agent = new Agent({
-      name: 'Review Bot',
-      model: session.model,
-      instructions: 'Help the user review code. Explain concrete findings.',
-      tools: reviewTools(),
-      modelSettings: {
-        store: false,
-        providerData: { include: ['reasoning.encrypted_content'] },
-        ...(effort !== undefined ? { reasoning: { effort } } : {}),
+    return {
+      model: provider.responses(session.model),
+      providerOptions: {
+        openai: {
+          store: false,
+          systemMessageMode: 'developer',
+          include: ['reasoning.encrypted_content'],
+          // Account catalogs may expose model aliases unknown to this SDK.
+          ...(session.supportedReasoningEfforts?.length ? { forceReasoning: true } : {}),
+          ...(effort !== undefined ? { reasoningEffort: effort } : {}),
+        } satisfies OpenAILanguageModelResponsesOptions,
       },
-    });
-    const result = await runner.run(agent, text, {
-      stream: true,
-      session: staged,
-      signal,
-      maxTurns: 8,
-      context: { signal },
-    });
-    // Observe rejection immediately, even if the HTTP consumer disconnects.
-    void result.completed.catch(() => undefined);
-    async function* checkedEvents(): AsyncIterable<RunStreamEvent> {
-      let started = 0;
-      let completed = 0;
-      try {
-        for await (const event of result) {
-          signal.throwIfAborted();
-          if (event.type === 'raw_model_stream_event') {
-            if (event.data.type === 'response_started') started++;
-            if (event.data.type === 'response_done') completed++;
-            if (event.data.type === 'model' && isRecord(event.data.event)) {
-              const raw = event.data.event;
-              const response = isRecord(raw.response) ? raw.response : undefined;
-              const error = response && isRecord(response.error) ? response.error : undefined;
-              if (error?.code === 'subscription_sharing_usage_limit_exceeded')
-                throw new BridgeError(
-                  'chatgpt_usage_limit',
-                  'ChatGPT plan usage limit reached. Retry after your allowance resets.',
-                  429,
-                );
-              if (error?.code === 'subscription_sharing_usage_unavailable')
-                throw new BridgeError(
-                  'chatgpt_usage_unavailable',
-                  'ChatGPT usage availability is temporarily unavailable. Please retry later.',
-                  503,
-                );
-            }
-          }
-          yield event;
-        }
-        await result.completed;
-        signal.throwIfAborted();
-        if (!started || completed !== started)
-          throw new BridgeError(
-            'inference_incomplete',
-            'Inference stream ended before response.completed.',
-            502,
-          );
-        await original.commit(staged);
-      } catch (error) {
-        if (error instanceof BridgeError) throw error;
-        if (error instanceof OpenAI.APIError && error.status === 401)
-          throw new BridgeError(
-            'sign_in_required',
-            'ChatGPT authorization is invalid. Sign in again.',
-            401,
-          );
-        if (error instanceof OpenAI.APIError && error.status === 429)
-          throw new BridgeError(
-            'provider_rate_limited',
-            'OpenAI rate limit reached. Please retry later.',
-            429,
-          );
-        throw new BridgeError(
-          'inference_failed',
-          'OpenAI inference failed or ended incompletely. Please retry.',
-          502,
-        );
-      } finally {
-        await provider.close();
-      }
-    }
-    return createAiSdkUiMessageStream(checkedEvents());
-  }
-  async deleteSession(session: ProviderSession): Promise<void> {
-    if (session.state instanceof LocalAgentSession) await session.state.clearSession();
+      toolProviderOptions: {
+        openai: { namespace: { name: 'review', description: 'Local code review utilities.' } },
+      },
+    };
   }
   async dispose(): Promise<void> {}
 }

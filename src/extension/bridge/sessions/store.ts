@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { BridgeError } from '../errors';
+import { SessionHistory } from './history';
 import type { ProviderSession } from '../providers/types';
 
 export interface BridgeSession {
@@ -7,6 +8,7 @@ export interface BridgeSession {
   providerId: string;
   createdAt: string;
   provider: ProviderSession;
+  history: SessionHistory;
 }
 export function sessionInfo(session: BridgeSession) {
   return {
@@ -22,7 +24,13 @@ export class SessionStore {
   create(providerId: string, provider: ProviderSession): BridgeSession {
     if (this.sessions.size >= 100)
       throw new BridgeError('sessions_full', 'Delete a session before creating another.', 429);
-    const session = { id: randomUUID(), providerId, provider, createdAt: new Date().toISOString() };
+    const session = {
+      id: randomUUID(),
+      providerId,
+      provider,
+      history: new SessionHistory(),
+      createdAt: new Date().toISOString(),
+    };
     this.sessions.set(session.id, session);
     return session;
   }
@@ -35,6 +43,7 @@ export class SessionStore {
     return [...this.sessions.values()];
   }
   delete(id: string): void {
+    this.sessions.get(id)?.history.clear();
     this.sessions.delete(id);
   }
 }

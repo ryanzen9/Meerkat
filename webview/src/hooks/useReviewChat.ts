@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { AssistantChatTransport, useAISDKRuntime } from '@assistant-ui/ai-sdk';
-import type { UIMessage } from 'ai';
+import type { ReviewChatMessage } from '@shared/chat';
 import type { ChatMessage, ReviewTab } from '@shared/models';
 import { vscodeBridge } from '../services/vscode';
 import { restoreReviewState, sessionMarkdown, startNewReviewSession } from '../state/reviewState';
@@ -9,7 +9,7 @@ import { bridgeFetch } from '../services/bridgeFetch';
 import { bridgeJson, BridgeResponseError } from '../services/bridgeApi';
 import type { AgentModel, ReasoningEffort } from '@shared/agentModels';
 
-const convertMessage = (message: ChatMessage): UIMessage => ({
+const convertMessage = (message: ChatMessage): ReviewChatMessage => ({
   id: message.id,
   role: message.role,
   parts: [{ type: 'text', text: message.text }],
@@ -20,6 +20,8 @@ export function useReviewChat(connection: {
   authenticated: boolean;
   activeAccountId?: string;
   models: AgentModel[];
+  modelsReady: boolean;
+  modelsLoading: boolean;
 }) {
   const [state, setState] = useState(() => restoreReviewState(vscodeBridge.getState()));
   const session = state.sessions.find(({ id }) => id === state.activeSessionId)!;
@@ -45,9 +47,9 @@ export function useReviewChat(connection: {
     session.accountId &&
     session.accountId !== connection.activeAccountId
       ? '此会话属于另一个 ChatGPT 账户，请切回原账户或新建会话。'
-      : connection.authenticated && session.model && !modelAvailable
+      : connection.authenticated && connection.modelsReady && session.model && !modelAvailable
         ? '此会话的模型在当前账户中不可用，请选择模型并新建会话。'
-        : connection.authenticated && modelAvailable && !effortAvailable
+        : connection.authenticated && connection.modelsReady && modelAvailable && !effortAvailable
           ? '此会话的推理强度已不可用，请选择当前模型支持的 Thinking 档位。'
           : '';
 
@@ -106,6 +108,10 @@ export function useReviewChat(connection: {
         // transport consumes only the standard callable Fetch API.
         fetch: bridgeFetch as typeof fetch,
         prepareSendMessagesRequest: async ({ messages }) => {
+          if (!connection.modelsReady)
+            throw new Error(
+              connection.modelsLoading ? '模型列表正在加载，请稍候。' : '请重试加载模型列表。',
+            );
           if (!connection.authenticated || !connection.model)
             throw new Error('请先 Continue with ChatGPT 并选择模型。');
           if (bindingError) throw new Error(bindingError);
@@ -172,21 +178,26 @@ export function useReviewChat(connection: {
       connection.activeAccountId,
       connection.model,
       connection.models,
+      connection.modelsReady,
+      connection.modelsLoading,
       session.id,
       session.bridgeSessionId,
       bindingError,
       reasoningEffort,
     ],
   );
-  const chat = useChat({
+  const chat = useChat<ReviewChatMessage>({
     id: session.id,
     messages: session.messages.map(convertMessage),
     transport,
   });
   // The Bridge accepts text turns; do not offer the SDK's default file uploads.
-  const runtime = useAISDKRuntime(chat, { adapters: { attachments: undefined } });
+  const runtime = useAISDKRuntime(chat, {
+    isSendDisabled: !connection.modelsReady,
+    adapters: { attachments: undefined },
+  });
   const lastMessages = useRef({ sessionId: session.id, messages: chat.messages });
-  const saveMessages = useCallback((sessionId: string, transcript: UIMessage[]) => {
+  const saveMessages = useCallback((sessionId: string, transcript: ReviewChatMessage[]) => {
     if (!transcript.length) return;
     const previous = lastMessages.current;
     if (previous.sessionId === sessionId && previous.messages === transcript) return;

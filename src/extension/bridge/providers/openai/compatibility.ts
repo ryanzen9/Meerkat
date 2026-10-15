@@ -78,7 +78,22 @@ export function planFetch(http: HttpFetch, unauthorized: () => Promise<void>): H
       throw new BridgeError('plan_request_invalid', 'Missing Responses request.', 422);
     validatePlanRequest(JSON.parse(init.body));
     const response = await http(input, { ...init, redirect: 'error' });
-    if (response.status === 401) await unauthorized();
-    return restoreCompletedOutput(response);
+    if (response.status === 401) {
+      await unauthorized();
+      throw new BridgeError(
+        'sign_in_required',
+        'ChatGPT authorization is invalid. Sign in again.',
+        401,
+      );
+    }
+    if (response.status === 429)
+      throw new BridgeError(
+        'provider_rate_limited',
+        'OpenAI rate limit reached. Please retry later.',
+        429,
+      );
+    if (!response.ok)
+      throw new BridgeError('inference_failed', 'OpenAI inference failed. Please retry.', 502);
+    return restoreCompletedOutput(response, true);
   };
 }
