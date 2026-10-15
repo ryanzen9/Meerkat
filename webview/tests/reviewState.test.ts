@@ -5,7 +5,7 @@ import {
   restoreReviewState,
   sessionMarkdown,
   startNewReviewSession,
-} from '../src/webview/state/reviewState';
+} from '../src/state/reviewState';
 
 test('invalid saved state recovers to a usable chat session', () => {
   for (const saved of [

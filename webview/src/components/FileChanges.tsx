@@ -1,4 +1,4 @@
-import type { GitFileChange, GitRepositoryInfo, PanelSnapshot } from '../../shared/models';
+import type { GitFileChange, GitRepositoryInfo, PanelSnapshot } from '@shared/models';
 import { Icon } from './Icon';
 
 const presentation = {

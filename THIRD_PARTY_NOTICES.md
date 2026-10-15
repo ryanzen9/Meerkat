@@ -2,7 +2,7 @@
 
 ## assistant-ui Thread and elements
 
-The components under `src/webview/components/assistant-ui/` are installed from the official [assistant-ui registry](https://r.assistant-ui.com/styles/new-york/thread.json) using `npx shadcn@latest add` for `@assistant-ui/thread`, `@assistant-ui/syntax-highlighter`, and `@assistant-ui/model-selector`. Source: [assistant-ui/assistant-ui](https://github.com/assistant-ui/assistant-ui). Local adaptations add VS Code theme tokens, offline code highlighting, accessible model selection, and slots for the existing Host clipboard, code actions, and persisted composer drafts.
+The components under `webview/src/components/assistant-ui/` are installed from the official [assistant-ui registry](https://r.assistant-ui.com/styles/new-york/thread.json) using `npx shadcn@latest add` for `@assistant-ui/thread`, `@assistant-ui/syntax-highlighter`, and `@assistant-ui/model-selector`. Source: [assistant-ui/assistant-ui](https://github.com/assistant-ui/assistant-ui). Local adaptations add VS Code theme tokens, offline code highlighting, accessible model selection, and slots for the existing Host clipboard, code actions, and persisted composer drafts.
 
 ```text
 MIT License

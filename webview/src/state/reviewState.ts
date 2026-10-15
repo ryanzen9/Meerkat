@@ -1,6 +1,6 @@
-import type { ChatMessage, ChatSession, ReviewTab, WebviewState } from '../../shared/models';
-import { isRecord } from '../../shared/protocol';
-import { isReasoningEffort } from '../../shared/agentModels';
+import type { ChatMessage, ChatSession, ReviewTab, WebviewState } from '@shared/models';
+import { isRecord } from '@shared/protocol';
+import { isReasoningEffort } from '@shared/agentModels';
 
 export interface ReviewState {
   activeTab: ReviewTab;

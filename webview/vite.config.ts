@@ -24,7 +24,10 @@ export default defineConfig(({ mode }) => ({
   ],
   base: './',
   resolve: {
-    alias: { '@': fileURLToPath(new URL('./src/webview', import.meta.url)) },
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      '@shared': fileURLToPath(new URL('../src/shared', import.meta.url)),
+    },
   },
   // The provider owns HTML, CSP, nonce, and entry resource URIs. A normal browser
   // build emits imported assets as files rather than library-mode data URLs.
@@ -32,7 +35,7 @@ export default defineConfig(({ mode }) => ({
     'process.env.NODE_ENV': JSON.stringify(mode === 'development' ? 'development' : 'production'),
   },
   build: {
-    outDir: 'dist/webview',
+    outDir: fileURLToPath(new URL('../dist/webview', import.meta.url)),
     emptyOutDir: true,
     target: 'es2022',
     sourcemap: mode === 'development',
@@ -41,7 +44,7 @@ export default defineConfig(({ mode }) => ({
     cssCodeSplit: false,
     modulePreload: false,
     rolldownOptions: {
-      input: fileURLToPath(new URL('./src/webview/main.tsx', import.meta.url)),
+      input: fileURLToPath(new URL('./src/main.tsx', import.meta.url)),
       output: {
         entryFileNames: 'main.js',
         chunkFileNames: 'chunks/[name]-[hash].js',

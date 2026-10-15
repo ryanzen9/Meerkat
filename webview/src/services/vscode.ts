@@ -1,5 +1,5 @@
-import type { WebviewState } from '../../shared/models';
-import type { WebviewToExtensionMessage } from '../../shared/protocol';
+import type { WebviewState } from '@shared/models';
+import type { WebviewToExtensionMessage } from '@shared/protocol';
 
 interface VsCodeApi {
   postMessage(message: WebviewToExtensionMessage): void;

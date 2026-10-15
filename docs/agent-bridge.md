@@ -12,6 +12,8 @@ bun run build
 code .
 ```
 
+Bridge 及其运行依赖在根工程的 `src/extension/` 与 `package.json` 中维护；前端位于独立的 `webview/` workspace，通过 `@shared/*` 使用 `src/shared/` 的协议和数据类型。一次根目录安装会准备两个工程。仅修改前端时可执行 `bun run --cwd webview build`；完整 `bun run test` 会依次运行根目录 Host / Shared / 构建测试和 `webview/tests/` 的 UI / Bridge 集成测试。
+
 1. 按 F5 启动 Extension Development Host，信任打开的工作区，在 Source Control 展开 Review Bot。
 2. 点击 **Continue with ChatGPT**，也可执行同名 Review Bot 命令。扩展先启动 `127.0.0.1` 临时端口上的 callback listener，再打开系统浏览器。
 3. 在 OpenAI 页面完成登录、动态注册与 ChatGPT plan usage 授权。无需固定 Client ID、Platform API Key、client secret、Codex CLI 或 app-server。

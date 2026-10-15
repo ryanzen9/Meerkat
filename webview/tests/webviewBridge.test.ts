@@ -6,15 +6,18 @@ import type {
   AgentProvider,
   AccountStatus,
   ProviderSession,
-} from '../src/extension/bridge/providers/types';
-import { ProviderRegistry } from '../src/extension/bridge/providers/registry';
-import { BridgeRuntime } from '../src/extension/bridge/runtime/bridgeRuntime';
-import { createBridgeApi } from '../src/extension/bridge/server/api';
-import { WebviewBridgeProxy } from '../src/extension/bridge/transport/webviewProxy';
-import { BridgeError } from '../src/extension/bridge/errors';
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../src/shared/protocol';
-import { createSession, appendTurn, restoreReviewState } from '../src/webview/state/reviewState';
-import type { AgentModel, ReasoningEffort } from '../src/shared/agentModels';
+} from '../../src/extension/bridge/providers/types';
+import { ProviderRegistry } from '../../src/extension/bridge/providers/registry';
+import { BridgeRuntime } from '../../src/extension/bridge/runtime/bridgeRuntime';
+import { createBridgeApi } from '../../src/extension/bridge/server/api';
+import { WebviewBridgeProxy } from '../../src/extension/bridge/transport/webviewProxy';
+import { BridgeError } from '../../src/extension/bridge/errors';
+import type {
+  ExtensionToWebviewMessage,
+  WebviewToExtensionMessage,
+} from '../../src/shared/protocol';
+import { createSession, appendTurn, restoreReviewState } from '../src/state/reviewState';
+import type { AgentModel, ReasoningEffort } from '../../src/shared/agentModels';
 
 // The production App, React hooks, AI SDK, IPC proxy, routes, Runtime and SessionStore
 // run unchanged. Only the remote provider/browser/VS Code shell are test fixtures.
@@ -241,7 +244,7 @@ let waitFor: (typeof import('@testing-library/react'))['waitFor'];
 let act: (typeof import('react'))['act'];
 let createElement: (typeof import('react'))['createElement'];
 let StrictMode: (typeof import('react'))['StrictMode'];
-let App: (typeof import('../src/webview/App'))['App'];
+let App: (typeof import('../src/App'))['App'];
 const globals = new Map<string, PropertyDescriptor | undefined>();
 function install(name: string, value: unknown) {
   globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -292,7 +295,7 @@ beforeAll(async () => {
   }));
   ({ render, fireEvent, cleanup, waitFor } = await import('@testing-library/react/pure'));
   ({ act, createElement, StrictMode } = await import('react'));
-  ({ App } = await import('../src/webview/App'));
+  ({ App } = await import('../src/App'));
 });
 beforeEach(() => {
   host = new TestHost();

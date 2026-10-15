@@ -1,4 +1,4 @@
-import { isRecord } from '../../shared/protocol';
+import { isRecord } from '@shared/protocol';
 import { bridgeFetch } from './bridgeFetch';
 
 export class BridgeResponseError extends Error {

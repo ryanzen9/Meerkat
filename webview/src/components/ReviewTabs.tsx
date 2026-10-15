@@ -1,5 +1,5 @@
 import type { KeyboardEvent } from 'react';
-import type { ReviewTab } from '../../shared/models';
+import type { ReviewTab } from '@shared/models';
 import { Icon } from './Icon';
 import type { IconName } from './Icon';
 

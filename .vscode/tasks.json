@@ -39,13 +39,38 @@
       "command": "bun run typecheck",
       "problemMatcher": "$tsc"
     },
+    {
+      "label": "build:webview",
+      "type": "shell",
+      "command": "bun run build:webview",
+      "problemMatcher": "$tsc"
+    },
+    {
+      "label": "test:webview",
+      "type": "shell",
+      "command": "bun run --cwd webview test",
+      "problemMatcher": []
+    },
     { "label": "lint", "type": "shell", "command": "bun run lint", "problemMatcher": [] },
     { "label": "format", "type": "shell", "command": "bun run format", "problemMatcher": [] },
     { "label": "check", "type": "shell", "command": "bun run check", "problemMatcher": "$tsc" },
     {
       "label": "typecheck:watch",
+      "dependsOn": ["typecheck:host:watch", "typecheck:webview:watch"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    },
+    {
+      "label": "typecheck:host:watch",
       "type": "shell",
-      "command": "bun run typecheck:watch",
+      "command": "bun run typecheck:host:watch",
+      "isBackground": true,
+      "problemMatcher": "$tsc-watch"
+    },
+    {
+      "label": "typecheck:webview:watch",
+      "type": "shell",
+      "command": "bun run typecheck:webview:watch",
       "isBackground": true,
       "problemMatcher": "$tsc-watch"
     }

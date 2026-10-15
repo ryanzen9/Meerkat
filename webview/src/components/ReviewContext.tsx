@@ -1,5 +1,5 @@
-import type { GitRepositoryInfo, PanelSnapshot } from '../../shared/models';
-import { changeCounts } from '../../shared/git';
+import type { GitRepositoryInfo, PanelSnapshot } from '@shared/models';
+import { changeCounts } from '@shared/git';
 import { Icon } from './Icon';
 
 interface ReviewContextProps {

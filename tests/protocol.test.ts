@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { isExtensionMessage, isWebviewMessage } from '../src/shared/protocol';
 import type { PanelSnapshot } from '../src/shared/models';
-import { panelReducer, initialPanelState } from '../src/webview/state/panelReducer';
 
 const snapshot: PanelSnapshot = {
   workspace: { name: null, folders: [], trusted: false },
@@ -130,17 +129,4 @@ describe('postMessage boundary validation', () => {
     expect(isWebviewMessage({ type: 'settings/open', requestId: '1' })).toBe(true);
     expect(isExtensionMessage({ type: 'host/action', requestId: '1' })).toBe(true);
   });
-});
-
-test('a hello response updates persisted state without losing workspace data', () => {
-  const loaded = panelReducer(initialPanelState, { type: 'host/snapshot', snapshot });
-  const replied = panelReducer(loaded, {
-    type: 'host/hello',
-    requestId: '1',
-    message: 'Hello',
-    messageCount: 2,
-  });
-  expect(replied.snapshot?.workspace).toEqual(snapshot.workspace);
-  expect(replied.snapshot?.state.messageCount).toBe(2);
-  expect(replied.reply).toBe('Hello');
 });

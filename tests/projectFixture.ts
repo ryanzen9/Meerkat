@@ -10,22 +10,34 @@ export async function createProjectFixture(): Promise<string> {
   await Promise.all(
     [
       'src',
+      'webview',
       'scripts',
       'resources',
       'package.json',
-      'vite.config.extension.ts',
-      'vite.config.webview.ts',
+      'vite.config.ts',
       'tsconfig.json',
       'tsconfig.base.json',
       'tsconfig.extension.json',
-      'tsconfig.webview.json',
+      'bunfig.toml',
+      'bun.lock',
       '.vscodeignore',
       'README.md',
       'LICENSE',
+      'THIRD_PARTY_NOTICES.md',
       'CHANGELOG.md',
-    ].map((path) => cp(join(projectRoot, path), join(root, path), { recursive: true })),
+    ].map((path) =>
+      cp(join(projectRoot, path), join(root, path), {
+        recursive: true,
+        filter: (source) => !source.split(/[\\/]/).includes('node_modules'),
+      }),
+    ),
   );
   await symlink(join(projectRoot, 'node_modules'), join(root, 'node_modules'), 'junction');
+  await symlink(
+    join(projectRoot, 'webview/node_modules'),
+    join(root, 'webview/node_modules'),
+    'junction',
+  );
   return root;
 }
 
