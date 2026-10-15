@@ -1,5 +1,5 @@
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react';
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useEffectEvent, useMemo, useState } from 'react';
 import { Icon } from './Icon';
 import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
 
@@ -82,9 +82,20 @@ export function ReviewModelSelector() {
 export function ReviewComposerInput({ autoFocus }: { autoFocus: boolean }) {
   const { sessionId, draft, onDraftChange } = useContext(ReviewComposerContext)!;
   const aui = useAui();
+  const readDraft = useEffectEvent(() => draft);
+  const saveDraft = useEffectEvent(onDraftChange);
   useEffect(() => {
-    aui.composer.setText(draft);
-  }, [aui, sessionId, draft]);
+    // Restore once per session; the primitive owns live text and IME updates.
+    // Mirroring a draft back during input can reset the browser's composition.
+    let previousText = readDraft();
+    aui.composer.setText(previousText);
+    return aui.subscribe(() => {
+      const text = aui.composer.getState().text;
+      if (text === previousText) return;
+      previousText = text;
+      saveDraft(text);
+    });
+  }, [aui, sessionId]);
 
   return (
     <ComposerPrimitive.Input
@@ -96,10 +107,6 @@ export function ReviewComposerInput({ autoFocus }: { autoFocus: boolean }) {
       enterKeyHint="send"
       maxLength={4000}
       placeholder="Ask the agent…"
-      onChange={(event) => {
-        aui.composer.setText(event.target.value);
-        onDraftChange(event.target.value);
-      }}
     />
   );
 }

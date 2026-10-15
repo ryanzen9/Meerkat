@@ -444,6 +444,7 @@ test('Thread composer sends with Enter while Shift+Enter and IME keep the draft'
   fireEvent.change(input, { target: { value: '审查输入边界' } });
   fireEvent.keyDown(input, { key: 'Enter', shiftKey: true });
   fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+  fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
   expect(host.runs).toHaveLength(0);
   await act(async () => {
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -451,6 +452,67 @@ test('Thread composer sends with Enter while Shift+Enter and IME keep the draft'
   });
   await answered(view, 1);
   expect(host.runs[0]!.text).toBe('审查输入边界');
+});
+
+test('Chinese composition keeps each provisional value without React restoring stale text', async () => {
+  const view = mount();
+  await connected(view);
+  const input = view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement;
+  // A real IME loses its composition range when React restores an old value.
+  // happy-dom has no IME engine, so observe those DOM writes directly.
+  const descriptor = Object.getOwnPropertyDescriptor(input, 'value')!;
+  const writes: string[] = [];
+  Object.defineProperty(input, 'value', {
+    ...descriptor,
+    set(value: string) {
+      writes.push(value);
+      descriptor.set!.call(this, value);
+    },
+  });
+  fireEvent.compositionStart(input);
+  for (const value of ['n', 'ni', '你', '你h', '你hao', '你好']) {
+    writes.length = 0;
+    fireEvent.input(input, {
+      target: { value },
+      inputType: 'insertCompositionText',
+      isComposing: true,
+      data: value,
+    });
+    expect(writes).toEqual([]);
+    expect(input.value).toBe(value);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(input.value).toBe(value);
+  }
+  fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+  fireEvent.compositionEnd(input, { data: '你好' });
+  expect(host.runs).toHaveLength(0);
+  await act(async () => {
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await host.settle();
+  });
+  await answered(view, 1);
+  expect(host.runs[0]!.text).toBe('你好');
+});
+
+test('compositionend persists the committed Chinese draft even without a final input event', async () => {
+  const view = mount();
+  await connected(view);
+  const input = view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement;
+  fireEvent.compositionStart(input);
+  fireEvent.input(input, { target: { value: 'nihao' }, isComposing: true });
+  fireEvent.compositionEnd(input, { target: { value: '你好' }, data: '你好' });
+  await waitFor(() => {
+    const state = restoreReviewState(host.savedState);
+    expect(state.sessions.find(({ id }) => id === state.activeSessionId)!.draft).toBe('你好');
+  });
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  fireEvent.click(view.getByRole('tab', { name: 'Agent Chat Windows' }));
+  expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
+    '你好',
+  );
+  expect(host.runs).toHaveLength(0);
 });
 
 async function streaming(view: View) {
