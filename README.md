@@ -12,6 +12,8 @@ bun run build
 code .
 ```
 
+根目录是 Extension Host 工程，`webview/` 是独立的 Bun workspace。根目录执行一次 `bun install` 即安装两端依赖，版本统一锁定在根目录 `bun.lock`；新增依赖时按归属在根目录或 `webview/` 中执行 `bun add`。
+
 在 VS Code 中按 **F5**，选择 `Run Review Bot Extension`。调试窗口打开后点击活动栏的 **Review Bot** 图标，打开插件侧栏。也可以从命令面板执行 **Review Bot: Open Panel**。启动前的 `dev` 任务会等待 Extension 与 Webview 首轮构建完成。
 
 调试窗口可通过 **File → Open Folder** 打开目标工作区。未打开文件夹时，面板会显示空工作区和 Git 状态。
@@ -25,6 +27,9 @@ code .
 | `bun run build`                           | 运行 Oxlint、检查 Host / Webview / 工具类型，生成两个生产构建入口 |
 | `bun run build:extension`                 | 使用独立 Vite 配置生成 CommonJS Extension Host 入口               |
 | `bun run build:webview`                   | 使用独立 Vite 配置生成浏览器脚本、CSS 和静态资源                  |
+| `bun run --cwd webview build`             | 独立检查前端类型并构建 Webview，无需先构建 Host                   |
+| `bun run --cwd webview dev`               | 仅监听前端及其共享代码并生成开发产物                              |
+| `bun run --cwd webview test`              | 仅运行前端状态和 UI / Bridge 集成测试                             |
 | `bun run dev` / `bun run watch`           | 轮询源码和构建配置，串行调用两个 Vite 开发构建                    |
 | `bun run typecheck`                       | 检查各环境的独立 TypeScript 配置                                  |
 | `bun run typecheck:watch`                 | 全项目监听类型检查                                                |
@@ -35,7 +40,7 @@ code .
 | `bun run package`                         | 通过 `vsce` 自动运行完整生产构建，输出 VSIX                       |
 | `bun run clean`                           | 删除 `dist` 与 `artifacts`                                        |
 
-开发监听以 500ms 间隔轮询源码、Shared、对应 Vite / TypeScript 配置和 manifest，支持挂载盘、增删文件和编辑器原子保存；使用磁盘资源，不启动 Vite HTTP 服务。两个构建串行执行，只清理各自输出目录。首轮失败时继续监听修复，两个目标都成功且没有待构建改动后才输出 `[watch] ready`，让 F5 加载最新产物。失败版本不会反复重试刷屏，下一次相关文件改动会重新构建。
+开发监听以 500ms 间隔轮询源码、Shared、对应 Vite / TypeScript 配置和 manifest，支持挂载盘、增删文件和编辑器原子保存；使用磁盘资源，不启动 Vite HTTP 服务。`webview/src/`、`webview/package.json`、前端 Vite / TypeScript 配置的改动只重建前端；`src/extension/` 的改动只重建 Host；Shared、根 manifest、锁文件和公共配置改动重建两端。两个构建串行执行，只清理各自输出目录。首轮失败时继续监听修复，两个目标都成功且没有待构建改动后才输出 `[watch] ready`，让 F5 加载最新产物。失败版本不会反复重试刷屏，下一次相关文件改动会重新构建。
 
 修改 React、CSS、Shared 后，构建自动更新，点击视图标题栏 **Reload Webview**（重启图标）加载新 UI；修改 Extension 后重启 F5 调试会话加载新 Host 代码。这里采用监听构建与手动重载，没有 HMR。需要实时类型诊断时另外运行 `bun run typecheck:watch`。
 
@@ -54,31 +59,41 @@ F5 结束后，开发任务可能继续监听；可通过 `Tasks: Terminate Task
 │   │   ├── providers/       # WebviewViewProvider 与消息路由
 │   │   ├── services/        # Workspace、Settings、State、Git
 │   │   └── webview/         # HTML、CSP、nonce
-│   ├── shared/              # JSON 数据类型、消息联合类型与运行时校验
-│   └── webview/             # 浏览器 / Webview 环境
-│       ├── App.tsx
-│       ├── main.tsx
-│       ├── components/     # 工作区信息、按钮与输入框
-│       ├── hooks/          # 握手、请求关联、超时处理
-│       ├── services/       # 私有 acquireVsCodeApi 封装
-│       └── state/          # React reducer
-├── tests/                  # Bun 测试
+│   └── shared/              # JSON 数据类型、消息联合类型与运行时校验
+├── webview/                 # 独立前端 workspace
+│   ├── src/
+│   │   ├── App.tsx
+│   │   ├── main.tsx
+│   │   ├── components/      # assistant-ui 与面板组件
+│   │   ├── hooks/           # 握手、请求关联、超时处理
+│   │   ├── services/        # 私有 acquireVsCodeApi 封装
+│   │   ├── state/           # React reducer
+│   │   └── styles.css       # Tailwind 入口与主题
+│   ├── tests/               # 前端状态、UI / Bridge 集成测试
+│   ├── package.json         # 前端运行、构建和测试依赖
+│   ├── components.json      # shadcn / assistant-ui 安装配置
+│   ├── tsconfig*.json       # 前端源码、工具和测试类型检查
+│   └── vite.config.ts       # React / Tailwind 浏览器构建
+├── tests/                   # Host、Shared、构建和监听测试
 ├── dist/
 │   ├── extension/extension.cjs
 │   └── webview/            # main.js、style.css、assets/、chunks/、第三方许可证
 ├── artifacts/              # vscode-review-bot-0.1.0.vsix
 ├── bun.lock
-├── package.json
+├── package.json             # 扩展 manifest、Host 依赖与全仓库脚本
+├── .oxlintrc.json            # 两端统一 lint 规则
+├── .oxfmtrc.json             # 两端统一格式化与 Tailwind 类名排序
 ├── tsconfig*.json
-├── vite.config.extension.ts # Vite Library Mode，Node / CommonJS
-└── vite.config.webview.ts   # Vite 浏览器构建，React / Tailwind
+└── vite.config.ts          # Vite Library Mode，Node / CommonJS
 ```
 
-单仓库单份依赖。Bun 负责依赖管理、脚本执行和开发构建编排，Host 与 Webview 都由 Vite 8 打包。Host 使用 Library Mode，目标为 Node 20 语法，`vscode` 与所有 Node 内置模块设为 external；Host 的官方 Agents SDK、OpenAI Client 与 OAuth 依赖全部打包为本地 CommonJS chunks。Webview 使用普通浏览器构建，React 完全打包，构建时禁止导入 Node、Bun 或 VS Code API。`package.json` 的 `type: module` 用于工程配置和脚本，Host 入口明确使用 `.cjs`。
+两端分别声明依赖，共享根目录的 Bun 锁文件。根 `package.json` 只保留 Host / Shared 所需运行依赖以及构建、打包、lint、格式化等公共开发工具；React、assistant-ui、Tailwind、前端 Vite 插件、DOM 测试工具均在 `webview/package.json` 中维护。Bun 负责依赖管理、脚本执行和开发构建编排，Host 与 Webview 都由 Vite 8 打包。Host 使用 Library Mode，目标为 Node 20 语法，`vscode` 与所有 Node 内置模块设为 external；Host 的官方 Agents SDK、OpenAI Client 与 OAuth 依赖全部打包为本地 CommonJS chunks。Webview 使用普通浏览器构建，React 完全打包，构建时禁止导入 Node、Bun 或 VS Code API。两端 `package.json` 的 `type: module` 用于工程配置和脚本，Host 入口明确使用 `.cjs`。
+
+前端可以在 `webview/` 中直接执行 `bun run build`、`bun run dev`、`bun run typecheck`、`bun run test`。前端构建输出到仓库的 `dist/webview/`，由扩展直接加载并纳入 VSIX。前端通过 `@/*` 引用自身 `src/`，通过 `@shared/*` 引用根目录 `src/shared/`；新增 shadcn / assistant-ui 组件时也在 `webview/` 中运行 CLI，使组件和依赖归入前端工程。
 
 HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview/main.js` 和 `style.css`，无需第二套 HTML 模板。图片、字体等静态资源使用源码中的 `import`、`new URL(..., import.meta.url)` 或 CSS `url()` 引用，Vite 输出到 `assets/` 并生成相对资源路径；不要使用网站根路径 `/image.png`。资源不内联为 data URL，保持现有 CSP。动态 JS chunk 输出到 `chunks/`；VSIX 包含这些目录中的实际文件。两个构建都禁用默认 public 目录复制，避免混入无关资源。
 
-三个独立 tsconfig 限制环境：Host 只有 Node / VS Code 类型，Webview 只有 DOM / Vite 类型，工具脚本可以使用 Bun。根 tsconfig 用于编辑器和全项目监听。Shared 只包含 JSON 数据与纯校验函数，禁止引入任何运行平台 API。
+各工程的 tsconfig 限制环境：`tsconfig.extension.json` 只有 Node / VS Code 类型，`webview/tsconfig.json` 只有 DOM / Vite 类型，各自的 `tsconfig.tools.json` 用于工具和 Bun 测试。根 `tsconfig.base.json` 统一 TypeScript 严格选项，根 `tsconfig.json` 用于 Host 和根工具的编辑器检查；`bun run typecheck:watch` 同时监听两端类型。代码风格、格式化、编辑器和开发任务配置继续统一放在根目录。Shared 只包含 JSON 数据与纯校验函数，禁止引入任何运行平台 API。
 
 ## WebView 布局与交互
 
@@ -125,7 +140,7 @@ UI 的颜色、字体、边框、输入框、按钮和焦点环使用 `--vscode-
 
 ### Tailwind CSS
 
-使用 **Tailwind CSS 4** 的 CSS 配置方式，由 `@tailwindcss/vite` 编译；不需要额外的 `tailwind.config.js` 或 PostCSS 配置。`src/webview/styles.css` 只负责 Tailwind 导入、`@theme inline` 主题 token、`@source` 扫描范围与少量 Webview 基础样式。组件的布局、间距、字体、按钮、输入框、焦点和状态样式使用 Tailwind 工具类。
+使用 **Tailwind CSS 4** 的 CSS 配置方式，由 `@tailwindcss/vite` 编译；不需要额外的 `tailwind.config.js` 或 PostCSS 配置。`webview/src/styles.css` 只负责 Tailwind 导入、`@theme inline` 主题 token、`@source` 扫描范围与少量 Webview 基础样式。组件的布局、间距、字体、按钮、输入框、焦点和状态样式使用 Tailwind 工具类。
 
 例如 `bg-sidebar`、`text-muted`、`bg-button`、`focus-visible:outline-focus` 映射到对应的 VS Code 变量；`high-contrast:border-contrast` 使用 VS Code 注入的高对比主题类。间距基准为 `4px`，根字号仍由 `--vscode-font-size` 决定，以保持原有侧栏密度。所有样式编译到本地 `dist/webview/style.css`，继续遵循原有 CSP，不使用 CDN 或运行时样式注入。
 

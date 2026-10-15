@@ -3,10 +3,11 @@ import { readdir, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createProjectFixture, runBuild, runCommand } from './projectFixture';
 
-test('repeated Vite builds load in Node and preserve the other output directory', async () => {
+test('root and standalone Webview builds preserve each other and the extension loads in Node', async () => {
   const root = await createProjectFixture();
   try {
-    await runBuild(root, 'webview');
+    const standalone = await runCommand(join(root, 'webview'), [process.execPath, 'run', 'build']);
+    if (standalone.exitCode !== 0) throw new Error(standalone.stdout + standalone.stderr);
     const webviewFile = join(root, 'dist/webview/main.js');
     const webview = await Bun.file(webviewFile).text();
     const extensionFile = join(root, 'dist/extension/extension.cjs');
@@ -51,7 +52,7 @@ test('repeated Vite builds load in Node and preserve the other output directory'
 test('small images, CSS fonts, and lazy chunks use packaged local resource paths', async () => {
   const root = await createProjectFixture();
   try {
-    const source = join(root, 'src/webview');
+    const source = join(root, 'webview/src');
     await Bun.write(
       join(source, 'main.tsx'),
       `import image from './fixture.svg';
@@ -98,7 +99,9 @@ test('small images, CSS fonts, and lazy chunks use packaged local resource paths
         expect(listing.stdout).toContain(`dist/webview/${file}\n`);
     }
     expect(listing.stdout).not.toContain('.map');
-    expect(listing.stdout).not.toMatch(/src\/|node_modules\/|vite\.config/);
+    expect(listing.stdout).not.toMatch(
+      /src\/|webview\/(?:src|tests|package\.json)|node_modules\/|vite\.config/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -109,10 +112,16 @@ test('Webview builds reject Node, Bun, and VS Code imports', async () => {
   try {
     for (const id of ['node:fs', 'fs/promises', 'bun:test', 'bun', 'vscode']) {
       await Bun.write(
-        join(root, 'src/webview/main.tsx'),
+        join(root, 'webview/src/main.tsx'),
         `import * as host from '${id}'; console.log(host);`,
       );
-      const result = await runCommand(root, [process.execPath, 'run', 'build:webview']);
+      const result = await runCommand(root, [
+        'node',
+        'webview/node_modules/vite/bin/vite.js',
+        'build',
+        '--config',
+        'webview/vite.config.ts',
+      ]);
       expect(result.exitCode).not.toBe(0);
       expect(result.stdout + result.stderr).toContain(`Webview cannot import host module: ${id}`);
     }

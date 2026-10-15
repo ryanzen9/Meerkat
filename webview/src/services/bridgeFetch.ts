@@ -1,4 +1,4 @@
-import { isExtensionMessage } from '../../shared/protocol';
+import { isExtensionMessage } from '@shared/protocol';
 import { vscodeBridge } from './vscode';
 
 // AI SDK receives a standard Fetch Response; only the Host can reach the

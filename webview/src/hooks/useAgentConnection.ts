@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { bridgeJson } from '../services/bridgeApi';
-import type { AgentModel } from '../../shared/agentModels';
+import type { AgentModel } from '@shared/agentModels';
 
 interface Account {
   id: string;

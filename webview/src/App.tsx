@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
-import { changeCounts } from '../shared/git';
+import { changeCounts } from '@shared/git';
 import { AgentChat, ChatActionsContext } from './components/AgentChat';
 import { FileChanges } from './components/FileChanges';
 import { ReviewContext } from './components/ReviewContext';

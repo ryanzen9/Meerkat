@@ -1,5 +1,5 @@
-import type { PanelSnapshot } from '../../shared/models';
-import type { ExtensionToWebviewMessage } from '../../shared/protocol';
+import type { PanelSnapshot } from '@shared/models';
+import type { ExtensionToWebviewMessage } from '@shared/protocol';
 
 export interface PanelUiState {
   snapshot: PanelSnapshot | null;

@@ -5,6 +5,15 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const targets = ['extension', 'webview'] as const;
 type Target = (typeof targets)[number];
+const targetFiles: Record<Target, string[]> = {
+  extension: ['src/extension', 'vite.config.ts', 'tsconfig.extension.json'],
+  webview: [
+    'webview/src',
+    'webview/package.json',
+    'webview/vite.config.ts',
+    'webview/tsconfig.json',
+  ],
+};
 
 let stopping = false;
 let activeBuild: { kill(signal?: number): void } | undefined;
@@ -43,16 +52,19 @@ async function fingerprint(path: string): Promise<string> {
 
 async function fingerprints(): Promise<Record<Target, string>> {
   const common = await Promise.all(
-    ['src/shared', 'package.json', 'tsconfig.base.json', 'tsconfig.json'].map((path) =>
-      fingerprint(join(projectRoot, path)),
-    ),
+    [
+      'src/shared',
+      'package.json',
+      'bun.lock',
+      'bunfig.toml',
+      'tsconfig.base.json',
+      'tsconfig.json',
+    ].map((path) => fingerprint(join(projectRoot, path))),
   );
   const [extension, webview] = await Promise.all(
     targets.map(async (target) => {
       const files = await Promise.all(
-        [`src/${target}`, `vite.config.${target}.ts`, `tsconfig.${target}.json`].map((path) =>
-          fingerprint(join(projectRoot, path)),
-        ),
+        targetFiles[target].map((path) => fingerprint(join(projectRoot, path))),
       );
       return [...common, ...files].join('|');
     }),
@@ -62,17 +74,18 @@ async function fingerprints(): Promise<Record<Target, string>> {
 
 async function build(target: Target): Promise<void> {
   console.log(`[watch] building ${target}`);
+  const targetRoot = target === 'webview' ? join(projectRoot, 'webview') : projectRoot;
   const child = Bun.spawn(
     [
       'node',
-      fileURLToPath(new URL('../node_modules/vite/bin/vite.js', import.meta.url)),
+      join(targetRoot, 'node_modules/vite/bin/vite.js'),
       'build',
       '--config',
-      `vite.config.${target}.ts`,
+      'vite.config.ts',
       '--mode',
       'development',
     ],
-    { cwd: projectRoot, stdout: 'inherit', stderr: 'inherit' },
+    { cwd: targetRoot, stdout: 'inherit', stderr: 'inherit' },
   );
   activeBuild = child;
   try {

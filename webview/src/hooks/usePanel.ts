@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
-import { isExtensionMessage } from '../../shared/protocol';
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../../shared/protocol';
+import { isExtensionMessage } from '@shared/protocol';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@shared/protocol';
 import { vscodeBridge } from '../services/vscode';
 import { initialPanelState, panelReducer } from '../state/panelReducer';
 

@@ -4,7 +4,7 @@ import { Icon } from './Icon';
 import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
 import { OpenAILogo } from './assistant-ui/elements/logos';
 
-import { isReasoningEffort, type AgentModel, type ReasoningEffort } from '../../shared/agentModels';
+import { isReasoningEffort, type AgentModel, type ReasoningEffort } from '@shared/agentModels';
 
 export interface ReviewComposerState {
   sessionId: string;

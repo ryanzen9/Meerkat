@@ -89,7 +89,7 @@ test('watch rebuilds the right targets, tracks new files/config, and recovers fr
     expect(await Bun.file(join(root, 'dist/extension/extension.cjs')).text()).toContain(
       'watch-extension-marker',
     );
-    const appPath = 'src/webview/App.tsx';
+    const appPath = 'webview/src/App.tsx';
     const app = await Bun.file(join(root, appPath)).text();
     await change(appPath, app.replace('Review Bot 面板', 'watch-webview-marker'), ['webview']);
     expect(await Bun.file(join(root, 'dist/webview/main.js')).text()).toContain(
@@ -100,15 +100,18 @@ test('watch rebuilds the right targets, tracks new files/config, and recovers fr
       'extension',
       'webview',
     ]);
-    const extraPath = 'src/webview/watch-added.ts';
+    const extraPath = 'webview/src/watch-added.ts';
     await change(extraPath, 'export const added = true;', ['webview']);
     let offset = watcher.output().length;
     await rm(join(root, extraPath));
     await watcher.waitFor('[watch] ready', offset);
     expect(watcher.output().slice(offset)).toContain('[watch] built webview');
     for (const target of ['extension', 'webview']) {
-      const path = `vite.config.${target}.ts`;
+      const path = target === 'webview' ? 'webview/vite.config.ts' : 'vite.config.ts';
       await change(path, `${await Bun.file(join(root, path)).text()}\n// config edit\n`, [target]);
+    }
+    for (const path of ['webview/package.json', 'webview/tsconfig.json']) {
+      await change(path, `${await Bun.file(join(root, path)).text()}\n`, ['webview']);
     }
     const tsconfigPath = 'tsconfig.extension.json';
     await change(tsconfigPath, `${await Bun.file(join(root, tsconfigPath)).text()}\n`, [
@@ -148,7 +151,7 @@ test('an initial build failure keeps F5 waiting until the source is fixed', asyn
 
 test('stopping during the first build terminates the Vite child and removes the lock', async () => {
   const root = await createProjectFixture();
-  const configPath = join(root, 'vite.config.extension.ts');
+  const configPath = join(root, 'vite.config.ts');
   const config = await Bun.file(configPath).text();
   await Bun.write(
     configPath,

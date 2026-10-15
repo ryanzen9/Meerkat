@@ -4,25 +4,31 @@
   "categories": { "correctness": "error", "suspicious": "warn" },
   "rules": { "typescript/no-explicit-any": "error" },
   "env": { "es2022": true },
-  "ignorePatterns": ["node_modules/**", "dist/**", "artifacts/**"],
+  "ignorePatterns": ["**/node_modules/**", "dist/**", "artifacts/**"],
   "overrides": [
     { "files": ["src/extension/**/*.ts"], "env": { "node": true } },
     {
-      "files": ["src/webview/**/*.{ts,tsx}"],
+      "files": ["webview/src/**/*.{ts,tsx}"],
       "plugins": ["typescript", "unicorn", "oxc", "react", "jsx-a11y"],
       "env": { "browser": true }
     },
     {
-      "files": ["scripts/**/*.ts", "tests/**/*.ts", "vite.config.*.ts"],
+      "files": [
+        "scripts/**/*.ts",
+        "tests/**/*.ts",
+        "vite.config.ts",
+        "webview/vite.config.ts",
+        "webview/tests/**/*.ts"
+      ],
       "env": { "node": true },
       "globals": { "Bun": "readonly" }
     },
     {
       "files": [
         "src/extension/providers/ReviewPanelProvider.ts",
-        "src/webview/services/vscode.ts",
-        "src/webview/services/bridgeFetch.ts",
-        "src/webview/hooks/usePanel.ts"
+        "webview/src/services/vscode.ts",
+        "webview/src/services/bridgeFetch.ts",
+        "webview/src/hooks/usePanel.ts"
       ],
       "rules": { "unicorn/require-post-message-target-origin": "off" }
     }

@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { AssistantChatTransport, useAISDKRuntime } from '@assistant-ui/ai-sdk';
 import type { UIMessage } from 'ai';
-import type { ChatMessage, ReviewTab } from '../../shared/models';
+import type { ChatMessage, ReviewTab } from '@shared/models';
 import { vscodeBridge } from '../services/vscode';
 import { restoreReviewState, sessionMarkdown, startNewReviewSession } from '../state/reviewState';
 import { bridgeFetch } from '../services/bridgeFetch';
 import { bridgeJson, BridgeResponseError } from '../services/bridgeApi';
-import type { AgentModel, ReasoningEffort } from '../../shared/agentModels';
+import type { AgentModel, ReasoningEffort } from '@shared/agentModels';
 
 const convertMessage = (message: ChatMessage): UIMessage => ({
   id: message.id,

@@ -7,6 +7,6 @@
   "singleQuote": true,
   "trailingComma": "all",
   "endOfLine": "lf",
-  "sortTailwindcss": { "stylesheet": "./src/webview/styles.css" },
-  "ignorePatterns": ["node_modules/**", "dist/**", "artifacts/**", "bun.lock"]
+  "sortTailwindcss": { "stylesheet": "./webview/src/styles.css" },
+  "ignorePatterns": ["**/node_modules/**", "dist/**", "artifacts/**", "bun.lock"]
 }

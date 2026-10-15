@@ -1,4 +1,4 @@
-import type { ChatSession } from '../../shared/models';
+import type { ChatSession } from '@shared/models';
 import { Icon } from './Icon';
 
 export function SessionHistory({

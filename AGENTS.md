@@ -6,7 +6,7 @@ What must you do： 开始工作前，必须完整查阅项目下的所有 `AGEN
 
 ## File References
 
-- `src/webview/AGENTS.md`：Webview 界面部分相关规范
+- `webview/AGENTS.md`：Webview 界面部分相关规范
 
 ## Skills
 
