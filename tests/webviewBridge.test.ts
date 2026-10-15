@@ -29,7 +29,9 @@ class TestHost {
     { id: 'model-b', name: 'Model B' },
   ];
   modelFailure = false;
+  includeTool = false;
   deleteFailures = 0;
+  copiedTexts: string[] = [];
   savedState: unknown;
   creations: ProviderSession[] = [];
   runs: { model: string; text: string }[] = [];
@@ -85,6 +87,26 @@ class TestHost {
           { type: 'text-end', id },
           { type: 'finish', finishReason: 'stop' },
         ];
+        if (this.includeTool) {
+          chunks.splice(
+            1,
+            0,
+            {
+              type: 'tool-input-available',
+              toolCallId: 'inspect-call',
+              toolName: 'inspect_text',
+              input: { text },
+            },
+            { type: 'tool-output-available', toolCallId: 'inspect-call', output: { todos: 1 } },
+          );
+          chunks.splice(
+            chunks.length - 1,
+            0,
+            { type: 'text-start', id: `${id}-second` },
+            { type: 'text-delta', id: `${id}-second`, delta: 'Additional explanation.' },
+            { type: 'text-end', id: `${id}-second` },
+          );
+        }
         return new ReadableStream<UIMessageChunk>({
           start(output) {
             chunks.forEach((chunk) => output.enqueue(chunk));
@@ -143,6 +165,10 @@ class TestHost {
         break;
       case 'bridge/cancel':
         this.proxy.cancel(message.requestId);
+        break;
+      case 'clipboard/write':
+        this.copiedTexts.push(message.text);
+        this.post({ type: 'host/action', requestId: message.requestId });
         break;
       case 'webview/ready':
         this.post({
@@ -278,6 +304,26 @@ async function answered(view: View, count: number) {
   );
   await waitFor(() => expect(host.runtime.sessions.list().length).toBeLessThanOrEqual(20));
 }
+
+test('message-pair layout keeps Bridge tool output and copies the full assistant response through Host', async () => {
+  host.includeTool = true;
+  const view = mount();
+  await connected(view);
+  await send(view, 'TODO: inspect this change');
+  await answered(view, 1);
+  const user = view.container.querySelector('[data-slot="message-pair-user"]');
+  const assistant = view.container.querySelector('[data-slot="message-pair-assistant"]');
+  expect(user?.textContent).toContain('TODO: inspect this change');
+  expect(assistant?.textContent).toContain('Additional explanation.');
+  expect(assistant?.querySelector('summary')?.textContent).toContain('inspect_text · 已结束');
+  expect(assistant?.querySelector('details')?.textContent).toContain('"todos": 1');
+  await act(async () => {
+    fireEvent.click(view.getByRole('button', { name: '复制回复' }));
+    await host.settle();
+  });
+  expect(host.copiedTexts).toEqual(['answer:model-a:1\nAdditional explanation.']);
+  expect(view.getByRole('button', { name: '已复制回复' })).toBeDefined();
+});
 
 for (const message of [
   'ChatGPT authorization was declined.',
