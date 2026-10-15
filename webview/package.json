@@ -1,5 +1,5 @@
 {
-  "name": "@vscode-review-bot/webview",
+  "name": "@meerkat/webview",
   "version": "0.1.0",
   "private": true,
   "type": "module",

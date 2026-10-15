@@ -45,7 +45,7 @@ export function serial(): Exclusive {
 export function signedInAuth() {
   const secrets = memorySecrets();
   secrets.values.set(
-    'reviewBot.bridge.chatgpt.v1',
+    'meerkat.bridge.chatgpt.v1',
     JSON.stringify({
       hostId: 'urn:uuid:fixture',
       activeId: 'account-1',

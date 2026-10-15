@@ -130,7 +130,7 @@ test('dynamic OAuth uses PKCE, issued client ID, protected persistence and resta
   const url = await f.login();
   expect(url.searchParams.get('client_id')).toBe('dynamic_agent_client');
   expect(url.searchParams.get('resource')).toBe(CHATGPT_RESOURCE);
-  expect(url.searchParams.get('agent_name_hint')).toBe('Review Bot');
+  expect(url.searchParams.get('agent_name_hint')).toBe('Meerkat');
   expect(url.searchParams.get('ext_agent_host_id')).toMatch(/^urn:uuid:/);
   await f.callback(url);
   const params = f.requests[0]!;

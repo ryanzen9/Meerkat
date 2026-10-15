@@ -8,7 +8,7 @@
       "isBackground": true,
       "problemMatcher": [
         {
-          "owner": "review-bot-build",
+          "owner": "meerkat-build",
           "pattern": {
             "regexp": "^(.+)\\((\\d+),(\\d+)\\): error (.*)$",
             "file": 1,

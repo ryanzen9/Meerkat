@@ -10,7 +10,7 @@ import { publicError } from './bridge/errors';
 let bridge: BridgeService | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  const output = vscode.window.createOutputChannel('Review Bot', { log: true });
+  const output = vscode.window.createOutputChannel('Meerkat', { log: true });
   const git = new GitService(output);
   bridge = new BridgeService(context, output);
   const provider = new ReviewPanelProvider(
@@ -29,7 +29,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     git,
     bridge,
-    vscode.commands.registerCommand('reviewBot.chatgptSignIn', async () => {
+    vscode.commands.registerCommand('meerkat.chatgptSignIn', async () => {
       try {
         const response = await bridge!.request(
           '/v1/providers/openai-agents/auth',
@@ -52,7 +52,7 @@ export function activate(context: vscode.ExtensionContext): void {
         void vscode.window.showErrorMessage(publicError(error).message);
       }
     }),
-    vscode.commands.registerCommand('reviewBot.bridgeConnection', async () => {
+    vscode.commands.registerCommand('meerkat.bridgeConnection', async () => {
       try {
         const path = await bridge!.exportConnection();
         void vscode.window.showInformationMessage(`Bridge connection saved to ${path}`);
@@ -65,11 +65,11 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     provider,
     vscode.window.registerWebviewViewProvider(ReviewPanelProvider.viewId, provider),
-    vscode.commands.registerCommand('reviewBot.showPanel', async () => {
+    vscode.commands.registerCommand('meerkat.showPanel', async () => {
       await vscode.commands.executeCommand(`${ReviewPanelProvider.viewId}.focus`);
     }),
-    vscode.commands.registerCommand('reviewBot.refresh', () => provider.refresh()),
-    vscode.commands.registerCommand('reviewBot.reloadWebview', () => provider.reload()),
+    vscode.commands.registerCommand('meerkat.refresh', () => provider.refresh()),
+    vscode.commands.registerCommand('meerkat.reloadWebview', () => provider.reload()),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       void provider.refresh();
     }),
@@ -77,11 +77,11 @@ export function activate(context: vscode.ExtensionContext): void {
       void provider.refresh();
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('reviewBot') || event.affectsConfiguration('git.enabled'))
+      if (event.affectsConfiguration('meerkat') || event.affectsConfiguration('git.enabled'))
         void provider.refresh();
     }),
   );
-  output.info('Review Bot activated in the Node.js Extension Host');
+  output.info('Meerkat activated in the Node.js Extension Host');
 }
 
 // All listeners, commands, and the view provider are owned by context.subscriptions.

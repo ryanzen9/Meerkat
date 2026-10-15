@@ -20,7 +20,7 @@ export function createReviewAgent(
     ]),
   ) as typeof definitions;
   return new ToolLoopAgent({
-    id: 'review-bot',
+    id: 'meerkat',
     ...configuration,
     model: safeModel(configuration.model),
     instructions:

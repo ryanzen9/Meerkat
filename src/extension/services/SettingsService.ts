@@ -3,7 +3,7 @@ import type { PanelSettings } from '../../shared/models';
 
 export class SettingsService {
   read(): PanelSettings {
-    const configuration = vscode.workspace.getConfiguration('reviewBot');
+    const configuration = vscode.workspace.getConfiguration('meerkat');
     return {
       greeting: configuration.get<string>('greeting', '你好，来自 Extension Host！'),
       showWorkspacePaths: configuration.get<boolean>('showWorkspacePaths', true),

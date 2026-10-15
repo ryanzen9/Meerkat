@@ -91,7 +91,7 @@ test('watch rebuilds the right targets, tracks new files/config, and recovers fr
     );
     const appPath = 'webview/src/App.tsx';
     const app = await Bun.file(join(root, appPath)).text();
-    await change(appPath, app.replace('Review Bot 面板', 'watch-webview-marker'), ['webview']);
+    await change(appPath, app.replace('Meerkat 面板', 'watch-webview-marker'), ['webview']);
     expect(await Bun.file(join(root, 'dist/webview/main.js')).text()).toContain(
       'watch-webview-marker',
     );

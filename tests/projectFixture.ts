@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 
 export async function createProjectFixture(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'review-bot-build-'));
+  const root = await mkdtemp(join(tmpdir(), 'meerkat-build-'));
   await Promise.all(
     [
       'src',

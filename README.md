@@ -1,6 +1,6 @@
-# Review Bot · VS Code Sidebar
+# Meerkat · VS Code Sidebar
 
-基于 **Bun + Vite + React + TypeScript** 的可运行 VS Code 扩展。通过官方 `contributes.viewsContainers.activitybar`、`contributes.views` 与 `registerWebviewViewProvider`，在活动栏添加 **Review Bot** 图标，点击后打开独立侧栏，提供代码审查、聊天和历史记录。原生 Git 提交、暂存、分支与 Graph 功能继续由 VS Code 提供。
+基于 **Bun + Vite + React + TypeScript** 的可运行 VS Code 扩展。通过官方 `contributes.viewsContainers.activitybar`、`contributes.views` 与 `registerWebviewViewProvider`，在活动栏添加 **Meerkat** 图标，点击后打开独立侧栏，提供代码审查、聊天和历史记录。原生 Git 提交、暂存、分支与 Graph 功能继续由 VS Code 提供。
 
 ## 快速开始
 
@@ -14,11 +14,11 @@ code .
 
 根目录是 Extension Host 工程，`webview/` 是独立的 Bun workspace。根目录执行一次 `bun install` 即安装两端依赖，版本统一锁定在根目录 `bun.lock`；新增依赖时按归属在根目录或 `webview/` 中执行 `bun add`。
 
-在 VS Code 中按 **F5**，选择 `Run Review Bot Extension`。调试窗口打开后点击活动栏的 **Review Bot** 图标，打开插件侧栏。也可以从命令面板执行 **Review Bot: Open Panel**。启动前的 `dev` 任务会等待 Extension 与 Webview 首轮构建完成。
+在 VS Code 中按 **F5**，选择 `Run Meerkat Extension`。调试窗口打开后点击活动栏的 **Meerkat** 图标，打开插件侧栏。也可以从命令面板执行 **Meerkat: Open Panel**。启动前的 `dev` 任务会等待 Extension 与 Webview 首轮构建完成。
 
 调试窗口可通过 **File → Open Folder** 打开目标工作区。未打开文件夹时，面板会显示空工作区和 Git 状态。
 
-面板在独立侧栏中默认展开，由 VS Code 提供标题栏和视图布局。活动栏图标、视图位置和大小可以由用户调整。如果升级前曾移动过 Review Bot，VS Code 可能保留旧布局；可执行 `View: Reset View Locations` 恢复默认位置。隐藏入口后也可通过命令面板执行 **Review Bot: Open Panel** 重新打开。
+面板在独立侧栏中默认展开，由 VS Code 提供标题栏和视图布局。活动栏图标、视图位置和大小可以由用户调整。如果升级前曾移动过 Meerkat，VS Code 可能保留旧布局；可执行 `View: Reset View Locations` 恢复默认位置。隐藏入口后也可通过命令面板执行 **Meerkat: Open Panel** 重新打开。
 
 ## 脚本
 
@@ -78,7 +78,7 @@ F5 结束后，开发任务可能继续监听；可通过 `Tasks: Terminate Task
 ├── dist/
 │   ├── extension/extension.cjs
 │   └── webview/            # main.js、style.css、assets/、chunks/、第三方许可证
-├── artifacts/              # vscode-review-bot-0.1.0.vsix
+├── artifacts/              # meerkat-0.1.0.vsix
 ├── bun.lock
 ├── package.json             # 扩展 manifest、Host 依赖与全仓库脚本
 ├── .oxlintrc.json            # 两端统一 lint 规则
@@ -121,12 +121,12 @@ HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview
 
 **状态管理**：Webview 使用 `useReducer` 管理业务状态，`usePanel` 管理通信；需求增长后可在 `state/` 替换为独立 store。Host 的 `StateService` 串行写入 `workspaceState`，避免并发丢失；跨工作区数据可以另加 `globalState`。Webview 的会话、输入草稿与布局选择通过 `getState` / `setState` 保存，不依赖 `retainContextWhenHidden`。
 
-**配置持久化**：`SettingsService` 读取 VS Code Configuration API，配置由 VS Code 持久化。在 Settings 中搜索 `Review Bot`，或设置：
+**配置持久化**：`SettingsService` 读取 VS Code Configuration API，配置由 VS Code 持久化。在 Settings 中搜索 `Meerkat`，或设置：
 
 ```json
 {
-  "reviewBot.greeting": "你好，来自 Extension Host！",
-  "reviewBot.showWorkspacePaths": true
+  "meerkat.greeting": "你好，来自 Extension Host！",
+  "meerkat.showWorkspacePaths": true
 }
 ```
 
@@ -164,7 +164,7 @@ bun run build
 
 ```sh
 bun run package
-code --install-extension artifacts/vscode-review-bot-0.1.0.vsix
+code --install-extension artifacts/meerkat-0.1.0.vsix
 ```
 
 也可执行 VS Code 命令 **Extensions: Install from VSIX...**。打包会通过 `vscode:prepublish` 重新生成两个生产构建，仅包含 manifest、活动栏图标、文档、许可证、Host 的 `.cjs` 文件和 Webview 的全部静态产物；排除源码、开发配置、source maps、监听锁和 `node_modules`。React 已打包，当前 Host 的 external 仅由 VS Code / Node 提供，因此保留 `--no-dependencies`。以后若增加需 external 的 npm 运行时依赖，必须同步调整依赖打包规则。开发构建生成两端 source maps，生产构建不生成。
@@ -172,7 +172,7 @@ code --install-extension artifacts/vscode-review-bot-0.1.0.vsix
 ### 人工调试与安装验证
 
 1. 按 F5，确认 `dev` 任务完成两个首次构建后才启动 Extension Development Host；在源码入口设置断点，检查 Host source map。
-2. 点击活动栏的 Review Bot，确认打开独立侧栏，检查固定布局、Git 变更、刷新、聊天与历史；切换到其他活动栏入口后再返回，确认草稿与会话保持。执行 **Review Bot: Open Panel**，确认能重新打开并聚焦侧栏。
+2. 点击活动栏的 Meerkat，确认打开独立侧栏，检查固定布局、Git 变更、刷新、聊天与历史；切换到其他活动栏入口后再返回，确认草稿与会话保持。执行 **Meerkat: Open Panel**，确认能重新打开并聚焦侧栏。
 3. 修改 React / CSS，等待 `[watch] ready` 后点击 **Reload Webview**；修改 Host 后重启调试会话。检查控制台没有资源 404、CSP 或模块加载错误。
 4. 切换深色、浅色及高对比主题，检查窄侧栏布局、输入框、按钮和焦点样式。
 5. 结束 `dev`，运行 `bun run package` 并安装 VSIX；关闭构建终端，在普通 VS Code 窗口重复上述功能检查。安装后无需 Bun 或 Vite；Agent Bridge 的 loopback HTTP 服务由扩展自身管理。

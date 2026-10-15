@@ -1,8 +1,8 @@
 {
-  "name": "vscode-review-bot",
-  "displayName": "Review Bot",
+  "name": "meerkat",
+  "displayName": "Meerkat",
   "version": "0.1.0",
-  "description": "AI-powered code review and chat in a dedicated Review Bot sidebar.",
+  "description": "AI-powered code review and chat in a dedicated Meerkat sidebar.",
   "categories": [
     "Other",
     "SCM Providers"
@@ -16,7 +16,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ryanzen9/vscode-review-bot.git"
+    "url": "https://github.com/ryanzen9/Meerkat.git"
   },
   "publisher": "local-dev",
   "workspaces": [
@@ -66,19 +66,19 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "reviewBot",
-          "title": "Review Bot",
+          "id": "meerkat",
+          "title": "Meerkat",
           "icon": "resources/meerkat.svg"
         }
       ]
     },
     "views": {
-      "reviewBot": [
+      "meerkat": [
         {
           "type": "webview",
-          "id": "reviewBot.panel",
-          "name": "Review Bot",
-          "contextualTitle": "Review Bot",
+          "id": "meerkat.panel",
+          "name": "Meerkat",
+          "contextualTitle": "Meerkat",
           "icon": "resources/meerkat.svg",
           "visibility": "visible"
         }
@@ -86,58 +86,58 @@
     },
     "commands": [
       {
-        "command": "reviewBot.chatgptSignIn",
+        "command": "meerkat.chatgptSignIn",
         "title": "Continue with ChatGPT",
-        "category": "Review Bot"
+        "category": "Meerkat"
       },
       {
-        "command": "reviewBot.bridgeConnection",
+        "command": "meerkat.bridgeConnection",
         "title": "Export Bridge Connection for API Testing",
-        "category": "Review Bot"
+        "category": "Meerkat"
       },
       {
-        "command": "reviewBot.showPanel",
+        "command": "meerkat.showPanel",
         "title": "Open Panel",
-        "category": "Review Bot"
+        "category": "Meerkat"
       },
       {
-        "command": "reviewBot.refresh",
+        "command": "meerkat.refresh",
         "title": "Refresh Workspace",
-        "category": "Review Bot",
+        "category": "Meerkat",
         "icon": "$(refresh)"
       },
       {
-        "command": "reviewBot.reloadWebview",
+        "command": "meerkat.reloadWebview",
         "title": "Reload Webview",
-        "category": "Review Bot",
+        "category": "Meerkat",
         "icon": "$(debug-restart)"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "reviewBot.refresh",
-          "when": "view == reviewBot.panel",
+          "command": "meerkat.refresh",
+          "when": "view == meerkat.panel",
           "group": "navigation@1"
         },
         {
-          "command": "reviewBot.reloadWebview",
-          "when": "view == reviewBot.panel",
+          "command": "meerkat.reloadWebview",
+          "when": "view == meerkat.panel",
           "group": "navigation@2"
         }
       ]
     },
     "configuration": {
-      "title": "Review Bot",
+      "title": "Meerkat",
       "properties": {
-        "reviewBot.greeting": {
+        "meerkat.greeting": {
           "type": "string",
           "default": "你好，来自 Extension Host！",
           "maxLength": 500,
           "description": "示例通信按钮返回的问候语。",
           "scope": "window"
         },
-        "reviewBot.showWorkspacePaths": {
+        "meerkat.showWorkspacePaths": {
           "type": "boolean",
           "default": true,
           "description": "在面板中显示工作区路径。",

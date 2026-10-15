@@ -1,4 +1,4 @@
-# Review Bot Webview
+# Meerkat Webview
 
 独立的 React / assistant-ui 前端工程，由根目录的 Bun workspace 和 `bun.lock` 管理。
 

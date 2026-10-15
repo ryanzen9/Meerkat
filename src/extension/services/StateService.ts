@@ -7,7 +7,7 @@ export class StateService {
   constructor(private readonly storage: vscode.Memento) {}
 
   read(): PanelState {
-    const value = this.storage.get<unknown>('reviewBot.messageCount', 0);
+    const value = this.storage.get<unknown>('meerkat.messageCount', 0);
     return {
       messageCount:
         typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0,
@@ -17,7 +17,7 @@ export class StateService {
   incrementMessageCount(): Promise<PanelState> {
     const next = this.writes.then(async () => {
       const messageCount = Math.min(this.read().messageCount + 1, Number.MAX_SAFE_INTEGER);
-      await this.storage.update('reviewBot.messageCount', messageCount);
+      await this.storage.update('meerkat.messageCount', messageCount);
       return { messageCount };
     });
     this.writes = next.catch(() => undefined);

@@ -18,7 +18,7 @@ interface PanelServices {
 }
 
 export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.Disposable {
-  static readonly viewId = 'reviewBot.panel';
+  static readonly viewId = 'meerkat.panel';
   private view: vscode.WebviewView | undefined;
   private ready = false;
   private listeners: vscode.Disposable[] = [];
@@ -109,7 +109,7 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
         case 'settings/open':
           await vscode.commands.executeCommand(
             'workbench.action.openSettings',
-            '@ext:local-dev.vscode-review-bot',
+            '@ext:local-dev.meerkat',
           );
           await this.post(view, { type: 'host/action', requestId: message.requestId });
           break;

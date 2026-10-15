@@ -6,7 +6,7 @@ function storage(initial: unknown = 0, failFirstWrite = false): Memento {
   let value = initial;
   let shouldFail = failFirstWrite;
   return {
-    keys: () => ['reviewBot.messageCount'],
+    keys: () => ['meerkat.messageCount'],
     get: (_key: string, fallback?: unknown) => value ?? fallback,
     update: async (_key: string, next: unknown) => {
       await Bun.sleep(1);

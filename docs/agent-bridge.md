@@ -16,8 +16,8 @@ code .
 
 Bridge 及其运行依赖在根工程的 `src/extension/` 与 `package.json` 中维护；前端位于独立的 `webview/` workspace，通过 `@shared/*` 使用 `src/shared/` 的协议和数据类型。一次根目录安装会准备两个工程。仅修改前端时可执行 `bun run --cwd webview build`；完整 `bun run test` 会依次运行根目录 Host / Shared / 构建测试和 `webview/tests/` 的 UI / Bridge 集成测试。
 
-1. 按 F5 启动 Extension Development Host，信任打开的工作区，在 Source Control 展开 Review Bot。
-2. 点击 **Continue with ChatGPT**，也可执行同名 Review Bot 命令。扩展先启动 `127.0.0.1` 临时端口上的 callback listener，再打开系统浏览器。
+1. 按 F5 启动 Extension Development Host，信任打开的工作区，在 Source Control 展开 Meerkat。
+2. 点击 **Continue with ChatGPT**，也可执行同名 Meerkat 命令。扩展先启动 `127.0.0.1` 临时端口上的 callback listener，再打开系统浏览器。
 3. 在 OpenAI 页面完成登录、动态注册与 ChatGPT plan usage 授权。无需固定 Client ID、Platform API Key、client secret、Codex CLI 或 app-server。
 4. 浏览器显示登录完成后回到面板。模型下拉框来自该账户的实时 `/v1/models` catalog，OAuth 响应保持官方顺序，只显示 `visibility: list` 的模型；解析器也兼容通用 API 的 `data[].id` 格式。
 5. 发送文字或粘贴代码，观察文字逐步生成。可发送“用 inspect_text 检查这段代码的 TODO 标记”测试 Function Tool。点击 **停止**取消。切换模型会开始新会话。
@@ -33,7 +33,7 @@ Bridge 及其运行依赖在根工程的 `src/extension/` 与 `package.json` 中
 
 ## 从 HTTP API 验证真实推理
 
-登录后执行 **Review Bot: Export Bridge Connection for API Testing**。提示给出 Host `globalStorageUri` 下的 `bridge-PID.json` 路径。文件以 `0600` 写入，仅包含本次进程的本地 Bridge 地址和访问凭据，关闭扩展时删除。该凭据可以在当前登录账户下调度推理；请仅交给受信任的本地客户端。它不包含 OAuth access/refresh/ID token。
+登录后执行 **Meerkat: Export Bridge Connection for API Testing**。提示给出 Host `globalStorageUri` 下的 `bridge-PID.json` 路径。文件以 `0600` 写入，仅包含本次进程的本地 Bridge 地址和访问凭据，关闭扩展时删除。该凭据可以在当前登录账户下调度推理；请仅交给受信任的本地客户端。它不包含 OAuth access/refresh/ID token。
 
 ```sh
 bun run bridge:smoke /absolute/path/to/bridge-PID.json
@@ -58,7 +58,7 @@ curl -fsS "$BRIDGE_URL/v1/providers/openai-agents/models" -H "Authorization: $BR
 BRIDGE_SESSION=$(curl -fsS "$BRIDGE_URL/v1/sessions" \
   -H "Authorization: $BRIDGE_AUTH" -H 'Content-Type: application/json' \
   -d '{"providerId":"openai-agents","model":"MODEL_SLUG"}' | jq -r '.id')
-curl -N -D /tmp/review-bot-stream-headers "$BRIDGE_URL/v1/sessions/$BRIDGE_SESSION/messages" \
+curl -N -D /tmp/meerkat-stream-headers "$BRIDGE_URL/v1/sessions/$BRIDGE_SESSION/messages" \
   -H "Authorization: $BRIDGE_AUTH" -H 'Content-Type: application/json' \
   -d '{"text":"Say exactly: Hello, world!"}'
 ```
@@ -125,7 +125,7 @@ flowchart LR
 
 ## OAuth 与本地安全
 
-每个 host 的 UUIDv4 `ext_agent_host_id` 在首次授权前存入 SecretStorage。首次用 `dynamic_agent_client`、`agent_name_hint=Review Bot`、S256 PKCE 和必要 scopes 发起授权；code exchange 使用 callback 返回的 `oaiapp_...` issued Client ID。复用账户时保持 host/client 映射，只加入对应账户的登录提示。验证 state 的一次性消费、nonce、RS256 签名、issuer、audience、subject 与到期时间后才替换 active account。Refresh 返回 ID Token 时也验证签名和身份。
+每个 host 的 UUIDv4 `ext_agent_host_id` 在首次授权前存入 SecretStorage。首次用 `dynamic_agent_client`、`agent_name_hint=Meerkat`、S256 PKCE 和必要 scopes 发起授权；code exchange 使用 callback 返回的 `oaiapp_...` issued Client ID。复用账户时保持 host/client 映射，只加入对应账户的登录提示。验证 state 的一次性消费、nonce、RS256 签名、issuer、audience、subject 与到期时间后才替换 active account。Refresh 返回 ID Token 时也验证签名和身份。
 
 SecretStorage 保存 host ID、独立注册映射、validated subject/email、issued Client ID、scopes、token expiry、ID/access/refresh tokens。Refresh 在到期前一分钟触发并尊重 `earliest_refresh_at`；同一 Host 用队列与 owner-only 文件锁串行化跨窗口更新，并在锁内重新加载 vault。失效 grant 或 401 清除相应凭据，网络故障保留凭据以便重试。登出保留 host/client/identity 映射，删除所选账户的全部令牌。该实现不将令牌加入普通日志，不启用 SDK telemetry；错误仅返回经过脱敏的 BridgeError。
 

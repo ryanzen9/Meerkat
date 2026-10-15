@@ -370,7 +370,7 @@ export async function snapshotPatch(
   const b = after ? await git.content(after, signal) : Buffer.alloc(0);
   if (!a.equals(b)) {
     // Git generates real unified hunks from captured bytes; no repository/index writes.
-    const folder = await mkdtemp(join(tmpdir(), 'review-bot-diff-'));
+    const folder = await mkdtemp(join(tmpdir(), 'meerkat-diff-'));
     try {
       await mkdir(join(folder, 'old'));
       await mkdir(join(folder, 'new'));

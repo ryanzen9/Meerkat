@@ -16,7 +16,7 @@ export const CHATGPT_SCOPES = [
   'resource.invoke',
   'chatgpt.tokens.use.direct',
 ];
-const secretKey = 'reviewBot.bridge.chatgpt.v1';
+const secretKey = 'meerkat.bridge.chatgpt.v1';
 const tokensSchema = z.object({
   accessToken: z.string().min(1),
   refreshToken: z.string().min(1),
@@ -257,7 +257,7 @@ export class ChatGPTAuth {
         code_challenge_method: 'S256',
         code_challenge: createHash('sha256').update(pending.verifier).digest('base64url'),
       };
-      if (!registration) params.agent_name_hint = 'Review Bot';
+      if (!registration) params.agent_name_hint = 'Meerkat';
       if (registration?.tokens?.idToken) params.id_token_hint = registration.tokens.idToken;
       if (registration?.email) params.login_hint = registration.email;
       url.search = new URLSearchParams(params).toString();
