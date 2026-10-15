@@ -18,7 +18,7 @@ async function fixture() {
   let nonce = '';
   let identity: Record<string, unknown> = {};
   let refreshCalls = 0;
-  let failRefresh = false;
+  let refreshFailure: { code: string; status: number } | undefined;
   let failRevocation = false;
   let wrongSignature = false;
   let scopes: string | undefined = CHATGPT_SCOPES.join(' ');
@@ -39,10 +39,10 @@ async function fixture() {
     if (params.get('grant_type') === 'refresh_token') {
       refreshCalls++;
       await Bun.sleep(5);
-      if (failRefresh)
+      if (refreshFailure)
         return Response.json(
-          { error: 'invalid_grant', error_description: 'test-access-secret' },
-          { status: 400 },
+          { error: refreshFailure.code, error_description: 'test-access-secret' },
+          { status: refreshFailure.status },
         );
       return Response.json({
         access_token: 'renewed-access',
@@ -107,8 +107,8 @@ async function fixture() {
     advance: () => {
       now += 3590000;
     },
-    failRefresh: () => {
-      failRefresh = true;
+    failRefresh: (code = 'invalid_grant', status = 400) => {
+      refreshFailure = { code, status };
     },
     failRevocation: () => {
       failRevocation = true;
@@ -269,6 +269,61 @@ test('concurrent refreshes rotate once, persist together and clear invalid crede
   f.failRefresh();
   await expect(f.auth.credential(account, true)).rejects.toThrow('expired');
   expect((await f.auth.status()).authenticated).toBe(false);
+});
+
+test.each([
+  'invalid_grant',
+  'invalid_refresh_token',
+  'token_expired',
+  'refresh_token_expired',
+  'refresh_token_invalidated',
+  'refresh_token_reused',
+])(
+  'terminal refresh error %s clears tokens and retains the issued client for sign-in',
+  async (code) => {
+    const f = await fixture();
+    const initial = await f.login();
+    await f.callback(initial);
+    const account = (await f.auth.status()).activeAccountId!;
+    f.advance();
+    f.failRefresh(code);
+    await expect(f.auth.credential(account)).rejects.toMatchObject({
+      code: 'auth_expired',
+      status: 401,
+    });
+    const status = await f.auth.status();
+    expect(status.authenticated).toBe(false);
+    expect(status.accounts).toMatchObject([{ id: account, signedIn: false }]);
+    expect([...f.secrets.values.values()].join('')).not.toMatch(/test-access|test-refresh|idToken/);
+    await expect(f.auth.credential(account)).rejects.toMatchObject({ code: 'sign_in_required' });
+    expect(f.refreshCount()).toBe(1);
+    const returning = await f.login(account);
+    expect(returning.searchParams.get('client_id')).toBe('oaiapp_fixture');
+    expect(returning.searchParams.get('ext_agent_host_id')).toBe(
+      initial.searchParams.get('ext_agent_host_id'),
+    );
+    await f.callback(returning);
+    expect((await f.auth.status()).authenticated).toBe(true);
+  },
+);
+
+test.each([
+  ['temporarily_unavailable', 503],
+  ['server_error', 500],
+  ['rate_limited', 429],
+] as const)('transient refresh error %s preserves credentials', async (code, status) => {
+  const f = await fixture();
+  await f.callback(await f.login());
+  const account = (await f.auth.status()).activeAccountId!;
+  const saved = [...f.secrets.values.values()];
+  f.advance();
+  f.failRefresh(code, status);
+  await expect(f.auth.credential(account)).rejects.toMatchObject({
+    code: 'auth_unavailable',
+    status: 502,
+  });
+  expect((await f.auth.status()).authenticated).toBe(true);
+  expect([...f.secrets.values.values()]).toEqual(saved);
 });
 
 test('logout revokes renewable session, clears tokens and retains host/client mapping', async () => {

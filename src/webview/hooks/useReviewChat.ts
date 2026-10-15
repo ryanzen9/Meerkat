@@ -168,13 +168,13 @@ export function useReviewChat(connection: {
   });
   const runtime = useAISDKRuntime(chat);
   const lastMessages = useRef({ sessionId: session.id, messages: chat.messages });
-  useEffect(() => {
+  const saveMessages = useCallback((sessionId: string, transcript: UIMessage[]) => {
+    if (!transcript.length) return;
     const previous = lastMessages.current;
-    lastMessages.current = { sessionId: session.id, messages: chat.messages };
-    if (previous.sessionId !== session.id || previous.messages === chat.messages) return;
-    if (!chat.messages.length) return;
+    if (previous.sessionId === sessionId && previous.messages === transcript) return;
+    lastMessages.current = { sessionId, messages: transcript };
     const now = new Date().toISOString();
-    const messages: ChatMessage[] = chat.messages.map((message) => ({
+    const messages: ChatMessage[] = transcript.map((message) => ({
       id: message.id,
       role: message.role === 'user' ? 'user' : 'assistant',
       text: message.parts
@@ -187,7 +187,7 @@ export function useReviewChat(connection: {
     setState((current) => ({
       ...current,
       sessions: current.sessions.map((item) =>
-        item.id === session.id
+        item.id === sessionId
           ? {
               ...item,
               messages: messages.slice(-100),
@@ -198,7 +198,23 @@ export function useReviewChat(connection: {
           : item,
       ),
     }));
-  }, [chat.messages, session.id]);
+  }, []);
+  useEffect(() => {
+    const previous = lastMessages.current;
+    if (previous.sessionId !== session.id) {
+      lastMessages.current = { sessionId: session.id, messages: chat.messages };
+      return;
+    }
+    if (previous.messages === chat.messages) return;
+    const save = () => saveMessages(session.id, chat.messages);
+    // Keep live deltas in the SDK; rebuild and persist the summary after a pause.
+    // A terminal status flushes immediately, even when the final message is unchanged.
+    if (chat.status === 'submitted' || chat.status === 'streaming') {
+      const timer = setTimeout(save, 250);
+      return () => clearTimeout(timer);
+    }
+    save();
+  }, [chat.messages, chat.status, session.id, saveMessages]);
 
   const setDraft = useCallback(
     (draft: string) =>
@@ -220,15 +236,17 @@ export function useReviewChat(connection: {
   );
   const selectSession = useCallback(
     (activeSessionId: string) => {
+      saveMessages(session.id, chat.messages);
       void chat.stop();
       setState((current) => ({ ...current, activeSessionId, activeTab: 'chat' }));
     },
-    [chat.stop],
+    [chat.stop, chat.messages, session.id, saveMessages],
   );
   const newSession = useCallback(() => {
+    saveMessages(session.id, chat.messages);
     void chat.stop();
     setState(startNewReviewSession);
-  }, [chat.stop]);
+  }, [chat.stop, chat.messages, session.id, saveMessages]);
 
   return {
     ...state,

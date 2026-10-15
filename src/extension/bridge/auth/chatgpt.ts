@@ -167,7 +167,16 @@ export class ChatGPTAuth {
       const code = z.object({ error: z.string() }).safeParse(data);
       if (
         code.success &&
-        ['invalid_grant', 'invalid_token', 'invalid_client'].includes(code.data.error)
+        [
+          'invalid_grant',
+          'invalid_token',
+          'invalid_client',
+          'invalid_refresh_token',
+          'token_expired',
+          'refresh_token_expired',
+          'refresh_token_invalidated',
+          'refresh_token_reused',
+        ].includes(code.data.error)
       )
         throw new BridgeError('auth_expired', 'ChatGPT authorization expired. Sign in again.', 401);
       throw new BridgeError(

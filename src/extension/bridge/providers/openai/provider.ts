@@ -156,8 +156,8 @@ export class OpenAIAgentsProvider implements AgentProvider {
               if (error?.code === 'subscription_sharing_usage_unavailable')
                 throw new BridgeError(
                   'chatgpt_usage_unavailable',
-                  'ChatGPT plan usage is unavailable for this account or workspace.',
-                  403,
+                  'ChatGPT usage availability is temporarily unavailable. Please retry later.',
+                  503,
                 );
             }
           }

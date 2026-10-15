@@ -33,6 +33,10 @@ class TestHost {
   deleteFailures = 0;
   copiedTexts: string[] = [];
   savedState: unknown;
+  savedWrites = 0;
+  holdStream = false;
+  streamOutput?: ReadableStreamDefaultController<UIMessageChunk>;
+  streamId = '';
   creations: ProviderSession[] = [];
   runs: { model: string; text: string }[] = [];
   deletes: string[] = [];
@@ -108,7 +112,13 @@ class TestHost {
           );
         }
         return new ReadableStream<UIMessageChunk>({
-          start(output) {
+          start: (output) => {
+            if (this.holdStream) {
+              this.streamOutput = output;
+              this.streamId = id;
+              chunks.slice(0, 3).forEach((chunk) => output.enqueue(chunk));
+              return;
+            }
             chunks.forEach((chunk) => output.enqueue(chunk));
             output.close();
           },
@@ -252,6 +262,7 @@ beforeAll(async () => {
     postMessage: (message: WebviewToExtensionMessage) => host.receive(message),
     getState: () => host.savedState,
     setState: (state: unknown) => {
+      host.savedWrites++;
       host.savedState = state;
     },
   }));
@@ -324,6 +335,85 @@ test('message-pair layout keeps Bridge tool output and copies the full assistant
   expect(host.copiedTexts).toEqual(['answer:model-a:1\nAdditional explanation.']);
   expect(view.getByRole('button', { name: '已复制回复' })).toBeDefined();
 });
+
+async function streaming(view: View) {
+  host.holdStream = true;
+  await connected(view);
+  fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
+    target: { value: 'streamed question' },
+  });
+  fireEvent.click(view.getByRole('button', { name: '发送消息' }));
+  await waitFor(() => expect(view.getByText('answer:model-a:1')).toBeDefined());
+}
+async function delta(view: View, suffix: string) {
+  await act(async () => {
+    host.streamOutput!.enqueue({ type: 'text-delta', id: host.streamId, delta: suffix });
+  });
+  await waitFor(() =>
+    expect(
+      view.container.querySelector('[data-slot="message-pair-assistant"]')?.textContent,
+    ).toContain(suffix),
+  );
+}
+
+test('streamed deltas render live with bounded persistence and flush the completed transcript', async () => {
+  const view = mount();
+  await streaming(view);
+  const writes = host.savedWrites;
+  let expected = 'answer:model-a:1';
+  for (let index = 0; index < 12; index++) {
+    const suffix = ` chunk-${index}`;
+    expected += suffix;
+    await delta(view, suffix);
+  }
+  expect(host.savedWrites - writes).toBeLessThanOrEqual(1);
+  await waitFor(() =>
+    expect(restoreReviewState(host.savedState).sessions[0]!.messages.at(-1)?.text).toBe(expected),
+  );
+  await delta(view, ' final');
+  await act(async () => {
+    host.streamOutput!.enqueue({ type: 'text-end', id: host.streamId });
+    host.streamOutput!.enqueue({ type: 'finish', finishReason: 'stop' });
+    host.streamOutput!.close();
+    await host.settle();
+  });
+  expect(restoreReviewState(host.savedState).sessions[0]!.messages.at(-1)?.text).toBe(
+    `${expected} final`,
+  );
+  await act(async () => cleanup());
+  const restored = mount();
+  await connected(restored);
+  expect(restored.getByText(`${expected} final`)).toBeDefined();
+});
+
+for (const terminal of ['error', 'cancel', 'new-session'] as const) {
+  test(`${terminal} flushes pending streamed text into its original session`, async () => {
+    const view = mount();
+    await streaming(view);
+    const original = restoreReviewState(host.savedState).activeSessionId;
+    await delta(view, ' latest');
+    await act(async () => {
+      if (terminal === 'error') {
+        host.streamOutput!.error(new BridgeError('temporary_failure', 'Retry later', 503));
+      } else {
+        fireEvent.click(
+          view.getByRole('button', { name: terminal === 'cancel' ? '取消运行' : '新建会话' }),
+        );
+      }
+      await host.settle();
+    });
+    const saved = restoreReviewState(host.savedState);
+    expect(saved.sessions.find((item) => item.id === original)!.messages.at(-1)?.text).toBe(
+      'answer:model-a:1 latest',
+    );
+    if (terminal === 'new-session') {
+      expect(saved.activeSessionId).not.toBe(original);
+      expect(saved.sessions.find((item) => item.id === saved.activeSessionId)!.messages).toEqual(
+        [],
+      );
+    }
+  });
+}
 
 for (const message of [
   'ChatGPT authorization was declined.',

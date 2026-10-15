@@ -120,6 +120,49 @@ test('SDK failures and truncated streams do not commit an unsuccessful turn', as
   }
 });
 
+test('temporary usage check failure reports 503, preserves credentials and permits a later retry', async () => {
+  const auth = signedInAuth();
+  let fail = true;
+  const provider = new OpenAIAgentsProvider(auth, async (url) => {
+    if (String(url).endsWith('/models'))
+      return Response.json({
+        models: [{ slug: 'fixture-model', display_name: 'Fixture', visibility: 'list' }],
+      });
+    const events = responseEvents(fail ? 'partial' : 'recovered');
+    if (fail)
+      events[events.length - 1] = {
+        type: 'response.failed',
+        response: {
+          ...(events.at(-1)!.response as object),
+          status: 'failed',
+          error: {
+            code: 'subscription_sharing_usage_unavailable',
+            message: 'Bearer test-access-secret',
+          },
+        },
+      };
+    return sse(events);
+  });
+  const signal = new AbortController().signal;
+  const session = await provider.createSession('fixture-model', signal);
+  await expect(
+    createUIMessageStreamResponse({ stream: await provider.run(session, 'first', signal) }).text(),
+  ).rejects.toMatchObject({
+    code: 'chatgpt_usage_unavailable',
+    status: 503,
+    message: 'ChatGPT usage availability is temporarily unavailable. Please retry later.',
+  });
+  expect((await auth.status()).authenticated).toBe(true);
+  const state = session.state as { getItems(): Promise<unknown[]> };
+  expect(await state.getItems()).toEqual([]);
+  fail = false;
+  const output = await createUIMessageStreamResponse({
+    stream: await provider.run(session, 'retry', signal),
+  }).text();
+  expect(output).toContain('recovered');
+  expect(JSON.stringify(await state.getItems())).not.toContain('partial');
+});
+
 test('compatibility layer rejects unsupported fields, nonnamespace tools and system input', () => {
   const valid = {
     model: 'fixture',
