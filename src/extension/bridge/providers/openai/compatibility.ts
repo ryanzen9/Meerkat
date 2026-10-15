@@ -1,6 +1,7 @@
 import { BridgeError } from '../../errors';
 import { isRecord } from '../../../../shared/protocol';
 import type { HttpFetch } from '../../http';
+import { restoreCompletedOutput } from './responseStream';
 
 export const unsupportedFields = [
   'background',
@@ -78,6 +79,6 @@ export function planFetch(http: HttpFetch, unauthorized: () => Promise<void>): H
     validatePlanRequest(JSON.parse(init.body));
     const response = await http(input, { ...init, redirect: 'error' });
     if (response.status === 401) await unauthorized();
-    return response;
+    return restoreCompletedOutput(response);
   };
 }

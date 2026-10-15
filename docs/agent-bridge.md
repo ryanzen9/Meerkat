@@ -130,6 +130,7 @@ HTTP 仅绑定 `127.0.0.1`，校验 exact Host、随机访问凭据和 Origin �
 
 - OAuth 推理只访问 `https://api.openai.com/v1/responses`，每次 HTTP 请求强制验证 `store:false`、`stream:true`、array input；使用账户独立的 OpenAI Client 注入 OpenAIProvider/Runner。
 - 本地 Session 发送完整历史，不使用 `conversation`、`previous_response_id` 或 OpenAIConversationsSession。加上 `reasoning.encrypted_content` 以支持 stateless reasoning 历史。成功终止并消费完整 stream 后才提交本轮；失败、中断或取消会丢弃 staged history。
+- 真实账户验收发现部分 ChatGPT plan usage 响应的 `response.completed.output` 为空，而 `response.output_item.done` 已给出完整回答。兼容层按 `output_index` 恢复结束事件的输出，供官方 SDK 正确结束运行并保存历史，避免一次发送被反复推理。已有完整结束输出时保持其为准；缺少已完成条目时直接失败，不自动重复生成。
 - 兼容层检查 SDK **实际序列化的请求**，拒绝官方当前不支持的字段。测试覆盖 SDK 真实生成的两轮消息、两次模型调用的 Function Tool、namespace、取消、失败/不完整/截断流和官方 UI 转换器。
 - 首版工具仅启用 namespaced 本地 Function Tool。Hosted MCP、tool search、image generation、file search、Code Interpreter、native computer use、平台 Files API 和 audio/video 输入没有启用；请求校验拒绝非 text 用户输入。工具执行不会读写工作区文件，也不运行 shell。
 - API 不接受任意 Agent instructions 或前端工具执行/approval-resume。`/v1/chat` 不重复追加客户端 transcript；新增用户 turn 由 Host session 管理。多个账户的注册可保存，但首版只有一个 active account，不是面向远程多用户的服务。
