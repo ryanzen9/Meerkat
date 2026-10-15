@@ -37,6 +37,7 @@ code .
 | `bun run lint` / `bun run lint:fix`       | Oxlint 静态检查 / 修复，警告也使检查失败                          |
 | `bun run format` / `bun run format:check` | Oxfmt 格式化 / 格式检查，包括 Tailwind 类名排序                   |
 | `bun run check`                           | 依次运行 lint、格式检查、类型检查与测试                           |
+| `bun run commitlint --edit <file>`        | 校验指定文件中的 Git 提交消息                                     |
 | `bun run package`                         | 通过 `vsce` 自动运行完整生产构建，输出 VSIX                       |
 | `bun run clean`                           | 删除 `dist` 与 `artifacts`                                        |
 
@@ -45,6 +46,29 @@ code .
 修改 React、CSS、Shared 后，构建自动更新，点击视图标题栏 **Reload Webview**（重启图标）加载新 UI；修改 Extension 后重启 F5 调试会话加载新 Host 代码。这里采用监听构建与手动重载，没有 HMR。需要实时类型诊断时另外运行 `bun run typecheck:watch`。
 
 F5 结束后，开发任务可能继续监听；可通过 `Tasks: Terminate Task` 结束 `dev`，终止构建子进程并释放监听锁。生产构建、测试、清理或打包前先结束 `dev`，避免其他命令同时写入产物。重复启动 `dev` 会被拒绝；若进程被强制杀死，确认旧进程已退出后删除 `dist/.watch.lock` 再启动。若 VS Code 找不到 Bun，请确保其终端 PATH 包含 Bun 的安装目录，然后重新启动 VS Code。
+
+## 提交规范与 CI
+
+根目录执行 `bun install` 时，`prepare` 会自动安装 [Husky](https://typicode.github.io/husky/) Git hooks；已有依赖的工作区可执行 `bun run prepare` 启用。每次 `git commit` 前，`pre-commit` 运行完整的 `bun run check`，检查 lint、格式、类型与两端测试；任何检查失败都会阻止提交。检查针对整个工作区，请先保存文件，并按上文说明结束 `dev` 监听任务。
+
+`commit-msg` 使用 [commitlint](https://commitlint.js.org/guides/local-setup.html) 的 Conventional Commits 配置校验提交消息，格式为 `type(scope): description`，其中 scope 可省略，description 支持中文。例如：
+
+```text
+feat(chat): 增加会话历史搜索
+fix: 修复 Webview 连接超时
+ci: add extension packaging workflow
+```
+
+允许的 type 为 `build`、`chore`、`ci`、`docs`、`feat`、`fix`、`perf`、`refactor`、`revert`、`style`、`test`，标题最长 100 个字符。VS Code 等 Git GUI 也会执行这些 hooks，需要其环境的 PATH 能找到 Bun 和 Node.js。
+
+[CI workflow](.github/workflows/ci.yml) 在推送到 `main`、创建或更新目标为 `main` 的 PR 时自动运行，也支持在 GitHub Actions 页面手动触发。流程使用 Node.js 22 和根 `package.json` 中 `packageManager` 锁定的 Bun 版本，依次执行：
+
+1. `bun install --frozen-lockfile`，确保依赖与锁文件一致。
+2. `bun run check`，完成 lint、格式、类型和 Host / Webview 测试。
+3. `bun run package`，通过现有 `vscode:prepublish` 构建两端并生成 VSIX。
+4. 上传 `artifacts/*.vsix` 为 `meerkat-vsix-<commit SHA>` artifact，保留 14 天，可在该次 Actions 运行页面下载。
+
+CI 通过 `HUSKY=0` 跳过本地 hooks 安装，检查由 workflow 显式执行。产物用于下载安装，不会自动发布到 Marketplace。
 
 ## 目录与运行边界
 
