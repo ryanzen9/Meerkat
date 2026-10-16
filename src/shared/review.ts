@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { FileReference } from '../extension/bridge/tools/reviewWorkspace';
 
 export type InteractionMode = 'chat' | 'review';
+export const MAX_REVIEW_STATE_ITEMS = 2000;
 export const submitReviewSchema = z
   .object({
     reviewId: z.string().uuid(),
@@ -94,8 +95,8 @@ export const reviewRunStateSchema: z.ZodType<ReviewRunState> = z.object({
   status: z.enum(['running', 'completed', 'incomplete', 'cancelled', 'failed']),
   findingIds: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(1000),
   issueCount: z.number().int().min(0).max(1000),
-  unfinishedItems: z.array(z.string().max(8192)).max(2000),
-  limitations: z.array(z.string().max(8192)).max(2000),
+  unfinishedItems: z.array(z.string().max(8192)).max(MAX_REVIEW_STATE_ITEMS),
+  limitations: z.array(z.string().max(8192)).max(MAX_REVIEW_STATE_ITEMS),
   summary: z.string().max(1000),
   startedAt: z.string().datetime(),
 });

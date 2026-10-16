@@ -8,6 +8,7 @@ import type {
   SubmitReviewResult,
 } from '../../../shared/review';
 import { BridgeError } from '../errors';
+import { MAX_REVIEW_STATE_ITEMS } from '../../../shared/review';
 import type { ReviewContext } from '../tools/reviewContext';
 import type { ReviewToolContext } from '../tools/reviewWorkspace';
 
@@ -15,6 +16,13 @@ type Changes = Awaited<ReturnType<ReviewToolContext['listChanges']>>;
 type Diff = Awaited<ReturnType<ReviewToolContext['getDiff']>>;
 const normalize = (text: string) =>
   text.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+
+function boundedStateItems(items: string[]): string[] {
+  const unique = [...new Set(items)];
+  if (unique.length <= MAX_REVIEW_STATE_ITEMS) return unique;
+  const visible = MAX_REVIEW_STATE_ITEMS - 1;
+  return [...unique.slice(0, visible), `另有 ${unique.length - visible} 项未展示。`];
+}
 
 // The session owns receipts independently of model history and stream delivery.
 export class ReviewJournal {
@@ -54,6 +62,7 @@ export class ReviewRun {
   private readonly errors = new Map<string, string>();
   private readonly limitations = new Set<string>();
   private pending = 0;
+  private finishIsAlone = true;
   finishInput: FinishReviewInput | undefined;
 
   constructor(
@@ -68,9 +77,13 @@ export class ReviewRun {
   }
 
   recordToolError(name: string) {
+    // A successful finish is committed; late SDK notifications cannot reopen it.
+    if (this.finishInput || this.state.status !== 'running') return;
     this.errors.set(name, `工具 ${name} 参数或执行失败，尚未修正。`);
-    // A later failure in the same model step invalidates an early finish call.
-    this.finishInput = undefined;
+  }
+
+  prepareToolStep(toolNames: readonly string[]) {
+    this.finishIsAlone = toolNames.length === 1 && toolNames[0] === 'finish_review';
   }
 
   async track<T>(name: string, action: () => Promise<T>): Promise<T> {
@@ -207,6 +220,11 @@ export class ReviewRun {
   finish(input: FinishReviewInput, signal?: AbortSignal) {
     signal?.throwIfAborted();
     this.assertOpen();
+    if (!this.finishIsAlone)
+      throw new BridgeError(
+        'review_finish_must_be_alone',
+        'Call finish_review alone, in a separate model step after all other tool results.',
+      );
     this.errors.delete('finish_review');
     if (this.pending)
       throw new BridgeError(
@@ -228,15 +246,15 @@ export class ReviewRun {
         'Describe the unfinished items or review limitations.',
       );
     this.finishInput = structuredClone(input);
-    this.state.unfinishedItems = [
-      ...new Set([
-        ...input.unfinishedItems,
-        ...missing.map((path) => `尚未完整读取 diff：${path}`),
-      ]),
-    ];
-    this.state.limitations = [
-      ...new Set([...input.limitations, ...this.limitations, ...this.errors.values()]),
-    ];
+    this.state.unfinishedItems = boundedStateItems([
+      ...input.unfinishedItems,
+      ...missing.map((path) => `尚未完整读取 diff：${path}`),
+    ]);
+    this.state.limitations = boundedStateItems([
+      ...input.limitations,
+      ...this.limitations,
+      ...this.errors.values(),
+    ]);
     return { accepted: true as const, status: input.status };
   }
 
@@ -244,11 +262,11 @@ export class ReviewRun {
     this.state.status =
       status === 'completed' ? (this.finishInput?.status ?? 'incomplete') : status;
     if (!this.finishInput) {
-      this.state.unfinishedItems = [
+      this.state.unfinishedItems = boundedStateItems([
         '审查未通过 finish_review 收尾校验。',
         ...this.missingPaths().map((path) => `尚未完整读取 diff：${path}`),
-      ];
-      this.state.limitations = [...this.limitations, ...this.errors.values()];
+      ]);
+      this.state.limitations = boundedStateItems([...this.limitations, ...this.errors.values()]);
     }
     this.refreshSummary();
     return structuredClone(this.state);

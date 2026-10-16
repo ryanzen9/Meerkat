@@ -4,7 +4,13 @@ import { ProviderRegistry } from '../src/extension/bridge/providers/registry';
 import { OpenAIChatGPTProvider } from '../src/extension/bridge/providers/openai/provider';
 import { BridgeRuntime } from '../src/extension/bridge/runtime/bridgeRuntime';
 import { createBridgeApi } from '../src/extension/bridge/server/api';
-import { finishReviewSchema, submitReviewSchema } from '../src/shared/review';
+import {
+  MAX_REVIEW_STATE_ITEMS,
+  finishReviewSchema,
+  reviewRunStateSchema,
+  reviewSnapshotSchema,
+  submitReviewSchema,
+} from '../src/shared/review';
 import { reviewFixture } from './reviewFixture';
 import { ReviewJournal } from '../src/extension/bridge/sessions/reviews';
 import { signedInAuth, responseEvents, sse } from './bridgeFixture';
@@ -37,7 +43,10 @@ const finish: Action = {
   input: () => ({ status: 'completed', unfinishedItems: [], limitations: [] }),
 };
 
-async function setup(actions: Action[], after?: (signal: AbortSignal) => Promise<Response>) {
+async function setup(
+  actions: (Action | Action[])[],
+  after?: (signal: AbortSignal) => Promise<Response>,
+) {
   const fixture = await reviewFixture();
   await fixture.write('file.ts', 'one\ninserted\nthree\n');
   let calls = 0;
@@ -72,17 +81,18 @@ async function setup(actions: Action[], after?: (signal: AbortSignal) => Promise
           throw new Error('Model must not be called after accepted finish_review');
         }
         return sse(
-          responseEvents('', [
-            {
-              id: `fc_${index}`,
+          responseEvents(
+            '',
+            (Array.isArray(action) ? action : [action]).map((entry, slot) => ({
+              id: `fc_${index}_${slot}`,
               type: 'function_call',
-              call_id: `call_${index}`,
-              name: action.name,
+              call_id: `call_${index}_${slot}`,
+              name: entry.name,
               namespace: 'review',
-              arguments: JSON.stringify(action.input(state)),
+              arguments: JSON.stringify(entry.input(state)),
               status: 'completed',
-            },
-          ]),
+            })),
+          ),
         );
       }),
   );
@@ -151,6 +161,105 @@ test('incremental submissions validate, deduplicate, retry finish and stop witho
   } finally {
     await f.runtime.dispose();
   }
+});
+
+for (const finishFirst of [true, false]) {
+  test(`mixed finish batch is rejected before acceptance, then a standalone finish stops inference (finish first: ${finishFirst})`, async () => {
+    const actions = [...setupActions, finishFirst ? [finish, submit] : [submit, finish], finish];
+    const f = await setup(actions);
+    try {
+      const run = f.runtime.start(
+        f.session.id,
+        'Review all changes',
+        f.signal,
+        undefined,
+        'review',
+      );
+      const output = await createUIMessageStreamResponse({ stream: run.stream }).text();
+      const chunks = output
+        .split('\n')
+        .filter((line) => line.startsWith('data: {'))
+        .map((line) => JSON.parse(line.slice(6)) as UIMessageChunk);
+      const mixedResult = chunks.find(
+        (chunk) =>
+          chunk.type === 'tool-output-available' &&
+          chunk.toolCallId === `call_3_${finishFirst ? 0 : 1}`,
+      );
+      expect(mixedResult).toMatchObject({
+        output: { error: { code: 'review_finish_must_be_alone' } },
+      });
+      expect(
+        chunks.find(
+          (chunk) => chunk.type === 'tool-output-available' && chunk.toolCallId === 'call_4_0',
+        ),
+      ).toMatchObject({ output: { accepted: true, status: 'completed' } });
+      expect(output).not.toContain('review_closed');
+      expect(f.calls()).toBe(actions.length);
+      expect(f.runtime.status(run.runId).status).toBe('completed');
+      expect(f.session.reviews.snapshot().findings).toHaveLength(1);
+      expect(f.session.reviews.snapshot().runs[0]).toMatchObject({
+        status: 'completed',
+        issueCount: 1,
+      });
+    } finally {
+      await f.runtime.dispose();
+    }
+  });
+}
+
+test('an accepted finish cannot be reopened by late tool errors', () => {
+  const run = new ReviewJournal().start(crypto.randomUUID(), crypto.randomUUID(), 'Review');
+  const input = {
+    status: 'incomplete' as const,
+    unfinishedItems: ['More context needed'],
+    limitations: [],
+  };
+  run.finish(input);
+  run.recordToolError('submit_review');
+  expect(run.finishInput).toEqual(input);
+  expect(() => run.finish(input)).toThrow('already closed');
+  expect(run.settle('completed').status).toBe('incomplete');
+});
+
+for (const status of ['cancelled', 'failed', 'incomplete'] as const) {
+  test(`large ${status} review stays within the recovery schema and reports omitted work`, async () => {
+    const journal = new ReviewJournal();
+    const run = journal.start(crypto.randomUUID(), crypto.randomUUID(), 'Review');
+    await run.track('list_changes', async () => ({
+      reviewId: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      repository: '/repo',
+      changes: Array.from({ length: 2001 }, (_, index) => ({ path: `src/file-${index}.ts` })),
+    }));
+    if (status === 'incomplete')
+      run.finish({ status, unfinishedItems: ['Need more time'], limitations: [] });
+    const state = run.settle(status === 'incomplete' ? 'completed' : status);
+    expect(state.status).toBe(status);
+    expect(state.unfinishedItems).toHaveLength(MAX_REVIEW_STATE_ITEMS);
+    expect(state.unfinishedItems.at(-1)).toBe('另有 3 项未展示。');
+    expect(reviewRunStateSchema.safeParse(state).success).toBe(true);
+    expect(reviewSnapshotSchema.safeParse(journal.snapshot()).success).toBe(true);
+  });
+}
+
+test('automatically detected review limitations also fit the recovery schema', async () => {
+  const journal = new ReviewJournal();
+  const run = journal.start(crypto.randomUUID(), crypto.randomUUID(), 'Review');
+  const reviewId = crypto.randomUUID();
+  const files = Array.from({ length: 2001 }, (_, index) => ({
+    path: `asset-${index}.bin`,
+    binary: true,
+    patch: 'binary',
+    patchOffset: 0,
+    patchEnd: true,
+  }));
+  await run.track('list_changes', async () => ({ reviewId, changes: files }));
+  await run.track('get_diff', async () => ({ reviewId, files }));
+  run.finish({ status: 'completed', unfinishedItems: [], limitations: [] });
+  const state = run.settle('completed');
+  expect(state.limitations).toHaveLength(MAX_REVIEW_STATE_ITEMS);
+  expect(state.limitations.at(-1)).toBe('另有 2 项未展示。');
+  expect(reviewSnapshotSchema.safeParse(journal.snapshot()).success).toBe(true);
 });
 
 for (const outcome of ['cancelled', 'failed'] as const) {

@@ -59,6 +59,13 @@ export function createReviewAgent(
     ...(options.reviewRun
       ? {
           toolCallConcurrency: 1,
+          // This SDK callback runs after the complete response is parsed and
+          // before any tool executes, so finish cannot accept a mixed batch.
+          onLanguageModelCallEnd: ({ content }) => {
+            options.reviewRun!.prepareToolStep(
+              content.filter((part) => part.type === 'tool-call').map((part) => part.toolName),
+            );
+          },
           onStepEnd: ({ content }) => {
             for (const part of content) {
               if (part.type === 'tool-error') options.reviewRun!.recordToolError(part.toolName);
