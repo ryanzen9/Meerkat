@@ -29,6 +29,12 @@ const PAGE_CHARS = 24000;
 const MAX_SNAPSHOTS = 4;
 const SNAPSHOT_TTL = 15 * 60 * 1000;
 const MAX_FILE_REFERENCES = 1000;
+const SNAPSHOT_SOURCES: Record<ReviewScope, Record<FileVersion, string>> = {
+  staged: { old: 'HEAD', new: 'Git index' },
+  'working-tree': { old: 'Git index', new: 'captured working tree and unsaved buffers' },
+  all: { old: 'HEAD', new: 'captured working tree and unsaved buffers' },
+  branch: { old: 'merge base', new: 'HEAD' },
+};
 const CONFIG_GLOB =
   '**/{AGENTS.md,package.json,bun.lock,bunfig.toml,tsconfig*.json,jsconfig.json,pyproject.toml,Cargo.toml,go.mod,pom.xml,build.gradle*,CMakeLists.txt,*.sln,*.csproj,vite.config.*,vitest.config.*,eslint.config.*,biome.json,.eslintrc*,.vscode/settings.json}';
 
@@ -309,8 +315,24 @@ export class ReviewContext implements ReviewToolContext {
     signal?: AbortSignal,
   ): Promise<string> {
     const entry = snapshot[version].get(path);
-    if (!entry)
-      reviewError('file_not_found', 'File does not exist in the requested snapshot version.');
+    if (!entry) {
+      const otherVersion = version === 'new' ? 'old' : 'new';
+      reviewError(
+        'file_not_found',
+        [
+          `File ${JSON.stringify(path)} does not exist in version "${version}" of the "${snapshot.scope}" review snapshot (${SNAPSHOT_SOURCES[snapshot.scope][version]}).`,
+          snapshot.scope === 'staged' && version === 'new'
+            ? 'Untracked files and unstaged new files are excluded.'
+            : undefined,
+          snapshot[otherVersion].has(path)
+            ? `This path exists in version "${otherVersion}"; check whether the request needs that side.`
+            : undefined,
+          'search_code searches live files; its matches may be absent from this snapshot.',
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+    }
     if (entry.mode === '160000')
       reviewError('file_unsupported', 'Submodule entries do not contain source text.');
     const content = await this.git(snapshot.root).content(entry, signal);

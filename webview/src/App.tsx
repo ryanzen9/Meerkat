@@ -150,8 +150,6 @@ export function App() {
               tabIndex={0}
             >
               <AgentChat
-                authenticated={connection.authenticated}
-                onFiles={() => chat.setTab('files')}
                 snapshot={panel.snapshot}
                 repository={repository}
                 sessionId={chat.session.id}

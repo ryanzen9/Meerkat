@@ -100,7 +100,7 @@ test('all seven registered workspace tools round-trip through the real SDK, prov
       }),
   );
   const contexts: ReviewContext[] = [];
-  const runtime = new BridgeRuntime(registry, 120000, () => {
+  const runtime = new BridgeRuntime(registry, {}, () => {
     const context = new ReviewContext(f.workspace);
     contexts.push(context);
     return context;
@@ -170,3 +170,82 @@ test('all seven registered workspace tools round-trip through the real SDK, prov
     await runtime.dispose();
   }
 });
+
+for (const cooperates of [true, false]) {
+  test(`unresponsive parallel tool cancels the run (honors abort: ${cooperates})`, async () => {
+    const f = await reviewFixture();
+    const state = await f.context.getReviewContext();
+    let toolAborted = false;
+    let release: (() => void) | undefined;
+    f.context.getReviewContext = async (signal) =>
+      new Promise((resolve, reject) => {
+        release = () => resolve(state);
+        signal!.addEventListener(
+          'abort',
+          () => {
+            toolAborted = true;
+            if (cooperates) reject(signal!.reason);
+          },
+          { once: true },
+        );
+      });
+    const diagnostics = f.context.getDiagnostics.bind(f.context);
+    f.context.getDiagnostics = async (input, signal) => {
+      await Bun.sleep(70);
+      return diagnostics(input, signal);
+    };
+    const registry = new ProviderRegistry();
+    registry.register(
+      () =>
+        new OpenAIChatGPTProvider(signedInAuth(), async (url) => {
+          if (String(url).endsWith('/models'))
+            return Response.json({
+              models: [{ slug: 'fixture-model', display_name: 'Fixture', visibility: 'list' }],
+            });
+          return sse(
+            responseEvents('', [
+              {
+                id: 'fc_stuck',
+                type: 'function_call',
+                call_id: 'stuck',
+                name: 'get_review_context',
+                namespace: 'review',
+                arguments: '{}',
+                status: 'completed',
+              },
+              {
+                id: 'fc_active',
+                type: 'function_call',
+                call_id: 'active',
+                name: 'get_diagnostics',
+                namespace: 'review',
+                arguments: JSON.stringify({ paths: ['file.ts'] }),
+                status: 'completed',
+              },
+            ]),
+          );
+        }),
+    );
+    const runtime = new BridgeRuntime(registry, { idleTimeoutMs: 120 }, () => f.context);
+    try {
+      await registry.initialize();
+      const provider = registry.list()[0]!;
+      const signal = new AbortController().signal;
+      const session = runtime.sessions.create(
+        provider.id,
+        await registry.get(provider.id).createSession('fixture-model', signal),
+      );
+      const run = runtime.start(session.id, 'Inspect in parallel', signal);
+      const output = await createUIMessageStreamResponse({ stream: run.stream }).text();
+      expect(output).toContain('tool_idle_timeout');
+      expect(output).toContain('get_review_context');
+      expect(output).toContain('tool-output-available');
+      expect(toolAborted).toBe(true);
+      expect(runtime.status(run.runId).status).toBe('cancelled');
+      expect(session.history.getMessages()).toEqual([]);
+    } finally {
+      release?.();
+      await runtime.dispose();
+    }
+  });
+}

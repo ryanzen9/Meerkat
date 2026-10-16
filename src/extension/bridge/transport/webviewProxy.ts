@@ -1,5 +1,6 @@
 import type { ExtensionToWebviewMessage } from '../../../shared/protocol';
-import { publicError } from '../errors';
+import { BridgeError, publicError } from '../errors';
+import { BRIDGE_TRANSPORT_IDLE_TIMEOUT_MS, createIdleTimer } from '../../../shared/bridgeTiming';
 
 interface ProxyRequest {
   requestId: string;
@@ -21,6 +22,7 @@ export class WebviewBridgeProxy {
       signal: AbortSignal,
     ) => Promise<Response>,
     private readonly post: (message: ExtensionToWebviewMessage) => Promise<void>,
+    private readonly idleTimeoutMs = BRIDGE_TRANSPORT_IDLE_TIMEOUT_MS,
   ) {}
   ack(id: string): void {
     this.operations.get(id)?.acknowledge?.();
@@ -32,7 +34,18 @@ export class WebviewBridgeProxy {
     if (this.operations.has(input.requestId) || this.operations.size >= 8) return;
     const operation: Operation = { controller: new AbortController() };
     this.operations.set(input.requestId, operation);
-    const signal = AbortSignal.any([operation.controller.signal, AbortSignal.timeout(150000)]);
+    const signal = operation.controller.signal;
+    const idle = createIdleTimer(
+      () =>
+        operation.controller.abort(
+          new BridgeError(
+            'bridge_idle_timeout',
+            'Bridge transport received no response within the inactivity timeout.',
+            408,
+          ),
+        ),
+      this.idleTimeoutMs,
+    );
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     const cancel = () => {
       operation.acknowledge?.();
@@ -42,6 +55,7 @@ export class WebviewBridgeProxy {
     try {
       const response = await this.request(input.path, input.method, input.body, signal);
       signal.throwIfAborted();
+      idle.reset();
       await this.post({
         type: 'host/bridge-head',
         requestId: input.requestId,
@@ -58,6 +72,7 @@ export class WebviewBridgeProxy {
         while (!signal.aborted) {
           const next = await reader.read();
           if (next.done) break;
+          idle.reset();
           // Preserve UTF-8 boundaries, and apply backpressure through per-chunk ACKs.
           const decoded = decoder.decode(next.value, { stream: true });
           for (let offset = 0; offset < decoded.length;) {
@@ -73,6 +88,7 @@ export class WebviewBridgeProxy {
             });
             await acknowledged;
             signal.throwIfAborted();
+            idle.reset();
             offset = end;
           }
         }
@@ -83,13 +99,14 @@ export class WebviewBridgeProxy {
       signal.throwIfAborted();
       await this.post({ type: 'host/bridge-end', requestId: input.requestId });
     } catch (error) {
-      const failure = publicError(error);
+      const failure = publicError(signal.aborted ? signal.reason : error);
       await this.post({
         type: 'host/bridge-error',
         requestId: input.requestId,
         message: `${failure.code}: ${failure.message}`,
       });
     } finally {
+      idle.dispose();
       signal.removeEventListener('abort', cancel);
       await reader?.cancel().catch(() => undefined);
       this.operations.delete(input.requestId);

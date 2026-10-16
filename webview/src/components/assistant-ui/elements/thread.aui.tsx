@@ -17,15 +17,12 @@ import {
   ReasoningTrigger,
 } from '@/components/assistant-ui/elements/reasoning.aui';
 import { ToolFallback } from '@/components/assistant-ui/elements/tool-fallback.aui';
-import {
-  ToolGroupContent,
-  ToolGroupRoot,
-  ToolGroupTrigger,
-} from '@/components/assistant-ui/elements/tool-group.aui';
+import { ToolCallTimelineGroup } from '@/components/assistant-ui/elements/tool-timeline.aui';
 import { TooltipIconButton } from '@/components/assistant-ui/elements/tooltip-icon-button';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
+import { ownsItsUi } from '@/components/assistant-ui/utils/tool-timeline';
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -36,7 +33,6 @@ import {
   ErrorPrimitive,
   groupPartByType,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
   type FileMessagePartComponent,
   type ImageMessagePartComponent,
@@ -82,11 +78,15 @@ const reasoningDuration = (timing: ThreadGroupPart['timing']) =>
 /**
  * Optional component overrides for the thread. `AssistantMessage` and
  * `Welcome` replace whole sections; the remaining slots override how the
- * assistant message renders tool calls and part groups. Tool UIs registered
- * by name (toolkit `render`, `useAssistantDataUI`) take precedence over
- * `ToolFallback`. When `TaskGroup` is set, tool calls that carry a nested
- * conversation and have no registered UI render through it instead of the
- * tool group; without it they render like any other tool call.
+ * assistant message renders tool calls and part groups. Tool calls render as
+ * the `elements-tool-timeline` element: an adjacent run of calls (a lone call
+ * included) is one timeline with a step per call. A call that owns its own UI
+ * never joins that run and keeps its own surface — a UI registered by name
+ * (`toolkit` `render`, `useAssistantDataUI`) wins over the timeline, and a call
+ * waiting on the host (an approval gate or an interrupt) renders through
+ * `ToolFallback` so its controls stay reachable. When `TaskGroup` is set, a call
+ * that carries a nested conversation and owns no UI renders through it instead
+ * of the timeline.
  * Local slots for text, action bars, input, footer and errors preserve the
  * extension's Host actions and draft storage without replacing message layout.
  */
@@ -100,8 +100,8 @@ export type ThreadComponents = {
   ComposerFooter?: ComponentType | undefined;
   ComposerLeading?: ComponentType | undefined;
   MessageError?: ComponentType | undefined;
+  ToolTimelineGroup?: ComponentType<{ group: ThreadGroupPart }> | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
-  ToolGroup?: ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>> | undefined;
   ReasoningGroup?: ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>> | undefined;
   TaskGroup?: ComponentType<{ group: ThreadGroupPart }> | undefined;
 };
@@ -114,11 +114,31 @@ const messageGroupBy = groupPartByType({
 
 type ThreadGroupKey = 'group-chainOfThought' | 'group-reasoning' | 'group-tool' | 'group-task';
 
+type GroupByPart = Parameters<typeof messageGroupBy>[0];
+type GroupByContext = Parameters<typeof messageGroupBy>[1];
+
+/**
+ * A call that owns its own UI renders on its own, so the run beside it stays a
+ * summary of the calls that have nothing but steps to show.
+ */
+const timelineGroupBy =
+  (base: (part: GroupByPart, context: GroupByContext) => readonly ThreadGroupKey[]) =>
+  (part: GroupByPart, context: GroupByContext) =>
+    part.type === 'tool-call' &&
+    ownsItsUi({
+      status: part.status,
+      approval: part.approval,
+      interrupt: part.interrupt,
+      hasRegisteredUi: (context?.toolUIs?.[part.toolName]?.length ?? 0) > 0,
+    })
+      ? []
+      : base(part, context);
+
 const TASK_GROUP_PATH: readonly ThreadGroupKey[] = ['group-chainOfThought', 'group-task'];
 
 const taskAwareGroupBy = (
-  part: Parameters<typeof messageGroupBy>[0],
-  context?: Parameters<typeof messageGroupBy>[1],
+  part: GroupByPart,
+  context?: GroupByContext,
 ): readonly ThreadGroupKey[] => {
   const path = messageGroupBy(part, context);
   return part.type === 'tool-call' &&
@@ -128,6 +148,10 @@ const taskAwareGroupBy = (
     ? TASK_GROUP_PATH
     : path;
 };
+
+const toolTimelineGroupBy = timelineGroupBy(messageGroupBy);
+
+const taskToolTimelineGroupBy = timelineGroupBy(taskAwareGroupBy);
 
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
@@ -230,9 +254,6 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
             <Composer autoFocus={autoFocus} />
-            <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
-              <ThreadSuggestions />
-            </AuiIf>
           </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
@@ -433,38 +454,6 @@ const ThreadWelcome: FC = () => {
   );
 };
 
-const ThreadSuggestions: FC = () => {
-  return (
-    <div className="aui-thread-welcome-suggestions flex w-full flex-col">
-      <ThreadPrimitive.Suggestions>{() => <ThreadSuggestionItem />}</ThreadPrimitive.Suggestions>
-    </div>
-  );
-};
-
-const ThreadSuggestionItem: FC = () => {
-  return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 animate-in fill-mode-both duration-200">
-      <SuggestionPrimitive.Trigger send asChild>
-        <button
-          type="button"
-          className="aui-thread-welcome-suggestion group flex w-full items-baseline gap-2.5 rounded-md px-2 py-2 text-start text-sm transition-colors outline-none hover:bg-foreground/[0.03] focus-visible:ring-1 focus-visible:ring-ring/50 motion-reduce:transition-none"
-        >
-          <span
-            aria-hidden
-            className="font-mono text-xs text-muted-foreground/60 transition-colors group-hover:text-foreground motion-reduce:transition-none"
-          >
-            {'>'}
-          </span>
-          <span className="min-w-0 flex-1 truncate">
-            <SuggestionPrimitive.Title className="aui-thread-welcome-suggestion-text-1 text-foreground" />{' '}
-            <SuggestionPrimitive.Description className="aui-thread-welcome-suggestion-text-2 text-muted-foreground empty:hidden" />
-          </span>
-        </button>
-      </SuggestionPrimitive.Trigger>
-    </div>
-  );
-};
-
 const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
   const { ComposerInput, ComposerFooter } = useContext(ThreadComponentsContext);
   return (
@@ -604,12 +593,12 @@ const AssistantMessage: FC = () => {
     Text: TextComponent = MarkdownText,
     AssistantActionBar: AssistantActionBarComponent = AssistantActionBar,
     MessageError: MessageErrorComponent = MessageError,
+    ToolTimelineGroup: ToolTimelineGroupComponent = ToolCallTimelineGroup,
     ToolFallback: ToolFallbackComponent = ToolFallback,
-    ToolGroup,
     ReasoningGroup,
     TaskGroup: TaskGroupComponent,
   } = useContext(ThreadComponentsContext);
-  const groupBy = TaskGroupComponent ? taskAwareGroupBy : messageGroupBy;
+  const groupBy = TaskGroupComponent ? taskToolTimelineGroupBy : toolTimelineGroupBy;
 
   const ACTION_BAR_PT = 'pt-1.5';
   // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
@@ -633,18 +622,7 @@ const AssistantMessage: FC = () => {
               case 'group-task':
                 return TaskGroupComponent ? <TaskGroupComponent group={part} /> : null;
               case 'group-tool':
-                if (ToolGroup) {
-                  return <ToolGroup group={part}>{children}</ToolGroup>;
-                }
-                return (
-                  <ToolGroupRoot variant="ghost">
-                    <ToolGroupTrigger
-                      count={part.indices.length}
-                      active={part.status.type === 'running'}
-                    />
-                    <ToolGroupContent>{children}</ToolGroupContent>
-                  </ToolGroupRoot>
-                );
+                return <ToolTimelineGroupComponent group={part} />;
               case 'group-reasoning': {
                 if (ReasoningGroup) {
                   return <ReasoningGroup group={part}>{children}</ReasoningGroup>;

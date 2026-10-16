@@ -4,8 +4,9 @@ import { BridgeError, publicError } from '../errors';
 import type { ProviderRegistry } from '../providers/registry';
 import { SessionStore } from '../sessions/store';
 import type { ReasoningEffort } from '../../../shared/agentModels';
-import { streamReviewAgent } from './reviewAgent';
+import { streamReviewAgent, type ReviewAgentOptions } from './reviewAgent';
 import type { ReviewContext } from '../tools/reviewContext';
+import { AGENT_IDLE_TIMEOUT_MS, createIdleTimer } from '../../../shared/bridgeTiming';
 
 export type RunStatus = 'running' | 'completed' | 'cancelled' | 'failed';
 interface Run {
@@ -25,7 +26,7 @@ export class BridgeRuntime {
   private readonly reviewContexts = new Map<string, ReviewContext>();
   constructor(
     readonly registry: ProviderRegistry,
-    private readonly timeoutMs = 120000,
+    private readonly options: ReviewAgentOptions = {},
     private readonly createReviewContext?: () => ReviewContext,
   ) {}
 
@@ -43,11 +44,18 @@ export class BridgeRuntime {
     if ([...this.runs.values()].some((r) => r.sessionId === sessionId && !r.settled))
       throw new BridgeError('session_busy', 'A run is already active in this session.', 409);
     const controller = new AbortController();
-    const combined = AbortSignal.any([
-      signal,
-      controller.signal,
-      AbortSignal.timeout(this.timeoutMs),
-    ]);
+    const combined = AbortSignal.any([signal, controller.signal]);
+    const idle = createIdleTimer(
+      () =>
+        controller.abort(
+          new BridgeError(
+            'run_idle_timeout',
+            'No model or tool response was received within the inactivity timeout.',
+            408,
+          ),
+        ),
+      this.options.idleTimeoutMs ?? AGENT_IDLE_TIMEOUT_MS,
+    );
     let finish!: () => void;
     const ended = new Promise<void>((resolve) => {
       finish = resolve;
@@ -69,6 +77,7 @@ export class BridgeRuntime {
     }
     this.runs.set(run.id, run);
     const provider = this.registry.get(session.providerId);
+    const agentOptions = this.options;
     const state = (): UIMessageChunk => ({
       type: 'data-run-state',
       data: {
@@ -84,6 +93,7 @@ export class BridgeRuntime {
     let first = true;
     let abortOutput: (() => void) | undefined;
     const cleanup = () => {
+      idle.dispose();
       terminal = true;
       run.settled = true;
       combined.removeEventListener('abort', aborted);
@@ -107,9 +117,13 @@ export class BridgeRuntime {
     const stream = new ReadableStream<UIMessageChunk>({
       start(output) {
         abortOutput = () => {
+          const failure =
+            combined.reason instanceof BridgeError
+              ? combined.reason
+              : new BridgeError('run_cancelled', 'Run cancelled.', 408);
           output.enqueue({
             type: 'error',
-            errorText: 'run_cancelled: Run cancelled or timed out.',
+            errorText: `${failure.code}: ${failure.message}`,
           });
           output.enqueue(state());
           output.close();
@@ -133,11 +147,13 @@ export class BridgeRuntime {
             combined,
             reasoningEffort,
             reviewContext,
+            agentOptions,
           ).then((source) => source.getReader());
           reader ??= await opening;
           const next = await reader.read();
           if (terminal) return;
           if (!next.done) {
+            idle.reset();
             output.enqueue(next.value);
             return;
           }
@@ -147,10 +163,13 @@ export class BridgeRuntime {
           cleanup();
         } catch (error) {
           if (terminal) return;
-          run.status = combined.aborted ? 'cancelled' : 'failed';
           const failure = combined.aborted
-            ? new BridgeError('run_cancelled', 'Run cancelled or timed out.', 408)
+            ? combined.reason instanceof BridgeError
+              ? combined.reason
+              : new BridgeError('run_cancelled', 'Run cancelled.', 408)
             : publicError(error);
+          run.status =
+            combined.aborted || failure.code === 'tool_idle_timeout' ? 'cancelled' : 'failed';
           output.enqueue({ type: 'error', errorText: `${failure.code}: ${failure.message}` });
           output.enqueue(state());
           output.close();

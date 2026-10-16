@@ -12,6 +12,7 @@ import { BridgeRuntime } from '../../src/extension/bridge/runtime/bridgeRuntime'
 import { createBridgeApi } from '../../src/extension/bridge/server/api';
 import { WebviewBridgeProxy } from '../../src/extension/bridge/transport/webviewProxy';
 import { BridgeError } from '../../src/extension/bridge/errors';
+import { ReviewContext } from '../../src/extension/bridge/tools/reviewContext';
 import type {
   ExtensionToWebviewMessage,
   WebviewToExtensionMessage,
@@ -19,6 +20,7 @@ import type {
 import type { PanelSnapshot } from '../../src/shared/models';
 import { createSession, appendTurn, restoreReviewState } from '../src/state/reviewState';
 import type { AgentModel, ReasoningEffort } from '../../src/shared/agentModels';
+import type { ThreadMessageLike } from '@assistant-ui/react';
 
 type TestModelChunk =
   Awaited<ReturnType<MockLanguageModelV4['doStream']>>['stream'] extends ReadableStream<infer T>
@@ -59,6 +61,10 @@ class TestHost {
   modelRequests = 0;
   git: PanelSnapshot['git'] = { available: false, repositories: [] };
   includeTool = false;
+  /** Tool calls the model asks for, one per streamed step before it answers. */
+  toolRuns = 1;
+  /** Tool-call ids stay unique across the runs of one host. */
+  toolCallSeq = 0;
   responseText?: string;
   deleteFailures = 0;
   copiedTexts: string[] = [];
@@ -145,13 +151,17 @@ class TestHost {
               });
             const id = randomUUID();
             const chunks: TestModelChunk[] = [];
-            if (this.includeTool && step === 1) {
+            if (this.includeTool && step <= this.toolRuns) {
+              this.toolCallSeq += 1;
               chunks.push(
                 {
                   type: 'tool-call',
-                  toolCallId: 'inspect-call',
-                  toolName: 'inspect_text',
-                  input: JSON.stringify({ text }),
+                  // Unique per call, and later steps carry a distinguishable
+                  // input, so a timeline of two steps can be told apart from one
+                  // rendered twice.
+                  toolCallId: `search-call-${this.toolCallSeq}`,
+                  toolName: 'search_code',
+                  input: JSON.stringify({ query: step === 1 ? text : `${text} (${step})` }),
                 },
                 finishChunk('tool-calls'),
               );
@@ -195,7 +205,26 @@ class TestHost {
     };
     const registry = new ProviderRegistry();
     registry.register(() => provider);
-    this.runtime = new BridgeRuntime(registry);
+    this.runtime = new BridgeRuntime(registry, {}, () => {
+      const context = new ReviewContext({
+        getState: async () => ({
+          trusted: true,
+          workspaceFolders: [],
+          repositories: [],
+          activeFile: null,
+          dirtyDocuments: [],
+        }),
+        findFiles: async () => [],
+        getDiagnostics: () => [],
+      });
+      context.searchCode = async ({ query }) => ({
+        repository: '/fixture',
+        matches: [{ path: 'file.ts', line: 1, column: 1, text: query, context: [] }],
+        truncated: false,
+        skippedFiles: 0,
+      });
+      return context;
+    });
     const api = createBridgeApi({
       runtime: this.runtime,
       callbackUri: () => 'http://127.0.0.1:1234/auth/callback',
@@ -375,6 +404,52 @@ afterAll(async () => {
 
 const mount = () => render(createElement(StrictMode, null, createElement(App)));
 type View = ReturnType<typeof mount>;
+
+test('Webview transport resets inactivity on each response chunk', async () => {
+  const { createBridgeFetch } = await import('../src/services/bridgeFetch');
+  const sent: WebviewToExtensionMessage[] = [];
+  let requestId = '';
+  host.receive = (message) => {
+    sent.push(message);
+    if (message.type === 'bridge/request') {
+      requestId = message.requestId;
+      host.post({
+        type: 'host/bridge-head',
+        requestId,
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+      });
+    }
+  };
+  const response = await createBridgeFetch(120)('/v1/providers');
+  const consume = response.text();
+  for (let chunk = 0; chunk < 5; chunk++) {
+    await Bun.sleep(40);
+    host.post({ type: 'host/bridge-chunk', requestId, text: 'progress' });
+  }
+  host.post({ type: 'host/bridge-end', requestId });
+  expect(await consume).toBe('progress'.repeat(5));
+  expect(sent.filter((message) => message.type === 'bridge/ack')).toHaveLength(5);
+  expect(sent.some((message) => message.type === 'bridge/cancel')).toBe(false);
+});
+
+test('Webview transport cancels an unanswered request despite unrelated IPC activity', async () => {
+  const { createBridgeFetch } = await import('../src/services/bridgeFetch');
+  const sent: WebviewToExtensionMessage[] = [];
+  host.receive = (message) => {
+    sent.push(message);
+  };
+  const pending = expect(createBridgeFetch(90)('/v1/providers')).rejects.toThrow(
+    'inactivity timeout',
+  );
+  for (let chunk = 0; chunk < 4; chunk++) {
+    await Bun.sleep(30);
+    host.post({ type: 'host/bridge-chunk', requestId: 'unrelated-request', text: 'activity' });
+  }
+  await pending;
+  expect(sent.filter((message) => message.type === 'bridge/cancel')).toHaveLength(1);
+});
+
 async function connected(view: View) {
   await waitFor(() =>
     expect(
@@ -549,10 +624,17 @@ test('assistant-ui Thread keeps Bridge tool output and copies the full assistant
   const assistant = view.container.querySelector('[data-slot="aui_assistant-message-root"]');
   expect(user?.textContent).toContain('TODO: inspect this change');
   expect(assistant?.textContent).toContain('Additional explanation.');
-  fireEvent.click(view.getByRole('button', { name: '1 tool call' }));
-  fireEvent.click(view.getByRole('button', { name: 'Used tool: inspect_text' }));
+  // The tool timeline replaced the tool group and tool fallback: the run is one
+  // step, and the step's chip carries what the Bridge's tool answered.
+  const timeline = assistant?.querySelector('[data-slot="tool-timeline"]');
+  expect(timeline?.textContent).toContain('Ran 1 step');
+  fireEvent.click(view.getByRole('button', { name: 'Ran 1 step' }));
+  expect(timeline?.textContent).toContain('Searched');
+  expect(timeline?.textContent).toContain('1 match');
+  expect(assistant?.querySelector('[data-slot="tool-fallback-root"]')).toBeNull();
+  fireEvent.click(view.getByRole('button', { name: '查看 search_code 调用详情' }));
   expect(assistant?.querySelector('[data-slot="tool-fallback-result"]')?.textContent).toContain(
-    'lineCount',
+    'matches',
   );
   await act(async () => {
     fireEvent.click(view.getByRole('button', { name: '复制回复' }));
@@ -563,6 +645,233 @@ test('assistant-ui Thread keeps Bridge tool output and copies the full assistant
   expect(view.queryByRole('button', { name: 'Edit' })).toBeNull();
   expect(view.queryByRole('button', { name: 'Refresh' })).toBeNull();
   expect(view.queryByRole('button', { name: 'Add Attachment' })).toBeNull();
+});
+
+test('consecutive tool calls read as one timeline with a step each', async () => {
+  host.includeTool = true;
+  host.toolRuns = 2;
+  const view = mount();
+  await connected(view);
+  await send(view, 'TODO: inspect this change');
+  await answered(view, 1);
+  const assistant = view.container.querySelector('[data-slot="aui_assistant-message-root"]');
+  const timeline = assistant?.querySelector('[data-slot="tool-timeline"]');
+  expect(timeline?.textContent).toContain('Ran 2 steps');
+  fireEvent.click(view.getByRole('button', { name: 'Ran 2 steps' }));
+  // Both calls are steps of the one run, each carrying its own result.
+  expect(timeline?.textContent).toContain('“TODO: inspect this change” · 1 match');
+  expect(timeline?.textContent).toContain('“TODO: inspect this change (2)” · 1 match');
+});
+
+test('each assistant message summarizes only its own tool calls', async () => {
+  host.includeTool = true;
+  const view = mount();
+  await connected(view);
+  await send(view, 'first inspection');
+  await answered(view, 1);
+  await send(view, 'second inspection');
+  await answered(view, 2);
+  const assistants = view.container.querySelectorAll('[data-slot="aui_assistant-message-root"]');
+  expect(assistants).toHaveLength(2);
+  for (const trigger of view.getAllByRole('button', { name: 'Ran 1 step' })) {
+    fireEvent.click(trigger);
+  }
+  const timelines = [...assistants].map((assistant) =>
+    assistant.querySelector('[data-slot="tool-timeline"]'),
+  );
+  expect(timelines).toHaveLength(2);
+  // A timeline reads the parts of the message it sits in, not the latest ones.
+  expect(timelines[0]?.textContent).toContain('first inspection');
+  expect(timelines[0]?.textContent).not.toContain('second inspection');
+  expect(timelines[1]?.textContent).toContain('second inspection');
+});
+
+// Exercise runtime grouping with statuses that the synchronous Bridge fixture
+// cannot hold open, including tools that render their own interactive surface.
+async function mountTimeline(message: ThreadMessageLike, customTool = false) {
+  const { AssistantRuntimeProvider, useExternalStoreRuntime, useAssistantToolUI } =
+    await import('@assistant-ui/react');
+  const { Thread } = await import('../src/components/assistant-ui/elements/thread.aui');
+  const { TooltipProvider } = await import('../src/components/ui/tooltip');
+  const approvals: unknown[] = [];
+  const CustomTool = () => createElement('div', { 'data-testid': 'custom-tool' }, 'Custom tool UI');
+  function ToolRegistration() {
+    useAssistantToolUI(customTool ? { toolName: 'custom', render: CustomTool } : null);
+    return null;
+  }
+  function Fixture({ message: current }: { message: ThreadMessageLike }) {
+    const runtime = useExternalStoreRuntime({
+      messages: [current],
+      convertMessage: (value) => value,
+      isRunning: current.status?.type === 'running',
+      onNew: async () => {},
+      onRespondToToolApproval: async (response) => {
+        approvals.push(response);
+      },
+    });
+    return createElement(
+      AssistantRuntimeProvider,
+      { runtime },
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(ToolRegistration),
+        createElement(Thread, { autoFocus: false }),
+      ),
+    );
+  }
+  const view = render(createElement(Fixture, { message }));
+  return {
+    ...view,
+    approvals,
+    update: (next: ThreadMessageLike) => view.rerender(createElement(Fixture, { message: next })),
+  };
+}
+
+const completedSearch = (id: string) => ({
+  type: 'tool-call' as const,
+  toolCallId: id,
+  toolName: 'search_code',
+  args: { query: id },
+  result: { matches: [], truncated: false },
+});
+
+test('timeline keeps its expanded state as a running call completes or fails', async () => {
+  const message: ThreadMessageLike = {
+    id: 'timeline',
+    role: 'assistant',
+    status: { type: 'running' },
+    content: [
+      completedSearch('first'),
+      {
+        type: 'tool-call',
+        toolCallId: 'search',
+        toolName: 'search_code',
+        args: { query: 'timeline' },
+      },
+    ],
+  };
+  const view = await mountTimeline(message);
+  fireEvent.click(view.getByRole('button', { name: 'Working…' }));
+  expect(
+    view.container.querySelector('[data-slot="tool-timeline"]')?.getAttribute('aria-busy'),
+  ).toBe('true');
+  const rows = view.container.querySelectorAll('[data-slot="tool-timeline-step"]');
+  expect([...rows].map((row) => row.getAttribute('data-status'))).toEqual(['complete', 'running']);
+  expect(rows[1]?.textContent).toContain('Searching');
+  expect(rows[1]?.textContent).not.toContain('0 matches');
+  await act(async () =>
+    view.update({
+      ...message,
+      status: { type: 'complete', reason: 'stop' },
+      content: [
+        completedSearch('first'),
+        {
+          type: 'tool-call',
+          toolCallId: 'search',
+          toolName: 'search_code',
+          args: { query: 'timeline' },
+          result: { error: { message: 'Search unavailable' } },
+        },
+      ],
+    }),
+  );
+  expect(
+    view.getByRole('button', { name: 'Ran 2 steps · 1 failed' }).getAttribute('aria-expanded'),
+  ).toBe('true');
+  expect(view.container.querySelector('[data-status="failed"]')?.textContent).toContain(
+    'Search unavailable',
+  );
+  expect(
+    view.container.querySelector('[data-slot="tool-timeline"]')?.getAttribute('aria-busy'),
+  ).toBe('false');
+});
+
+test('approval controls and registered tool UIs split adjacent timeline groups', async () => {
+  const view = await mountTimeline(
+    {
+      id: 'timeline',
+      role: 'assistant',
+      status: { type: 'requires-action', reason: 'tool-calls' },
+      content: [
+        completedSearch('first'),
+        {
+          type: 'tool-call',
+          toolCallId: 'approval',
+          toolName: 'ask',
+          args: {},
+          approval: { id: 'approval', prompt: 'Allow inspection?' },
+        },
+        { type: 'tool-call', toolCallId: 'custom', toolName: 'custom', args: {}, result: 'done' },
+        completedSearch('last'),
+      ],
+    },
+    true,
+  );
+  await waitFor(() => expect(view.getByTestId('custom-tool').textContent).toBe('Custom tool UI'));
+  expect(view.container.querySelectorAll('[data-slot="tool-timeline"]')).toHaveLength(2);
+  expect(view.getByRole('button', { name: 'Allow' })).toBeDefined();
+  expect(view.getByRole('button', { name: 'Deny' })).toBeDefined();
+  expect(view.getByTestId('custom-tool').closest('[data-slot="tool-timeline"]')).toBeNull();
+  fireEvent.click(view.getByRole('button', { name: 'Allow' }));
+  await waitFor(() =>
+    expect(view.approvals).toEqual([expect.objectContaining({ approved: true })]),
+  );
+});
+
+test('cancelled tool calls remain visible with a cancelled summary', async () => {
+  const view = await mountTimeline({
+    id: 'timeline',
+    role: 'assistant',
+    status: { type: 'incomplete', reason: 'cancelled' },
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'search',
+        toolName: 'search_code',
+        args: { query: 'timeline' },
+      },
+    ],
+  });
+  fireEvent.click(view.getByRole('button', { name: 'Ran 1 step · 1 cancelled' }));
+  expect(
+    view.container.querySelector('[data-slot="tool-timeline-step"]')?.getAttribute('data-status'),
+  ).toBe('cancelled');
+});
+
+test('failed timeline steps expose full errors and expandable raw tool input and output', async () => {
+  const path = 'app/[locale]/projects/page.tsx';
+  const message = 'File does not exist in the requested snapshot version.';
+  const view = await mountTimeline({
+    id: 'timeline',
+    role: 'assistant',
+    status: { type: 'complete', reason: 'stop' },
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'read',
+        toolName: 'read_file',
+        args: { reviewId: 'review', path, version: 'new', startLine: 1, endLine: 100 },
+        result: { error: { code: 'file_not_found', message } },
+      },
+    ],
+  });
+  fireEvent.click(view.getByRole('button', { name: 'Ran 1 step · 1 failed' }));
+  expect(view.container.querySelector('[data-slot="tool-timeline-error"]')?.textContent).toBe(
+    `file_not_found: ${message}`,
+  );
+  expect(view.container.querySelector('[data-slot="tool-timeline-details"]')).toBeNull();
+  const details = view.getByRole('button', { name: '查看 read_file 调用详情' });
+  fireEvent.click(details);
+  expect(details.getAttribute('aria-expanded')).toBe('true');
+  expect(view.container.querySelector('[data-slot="tool-fallback-args"]')?.textContent).toContain(
+    path,
+  );
+  expect(view.container.querySelector('[data-slot="tool-fallback-result"]')?.textContent).toContain(
+    message,
+  );
+  fireEvent.click(details);
+  expect(details.getAttribute('aria-expanded')).toBe('false');
 });
 
 test('Thread composer preserves drafts across tabs, sessions and remounts', async () => {

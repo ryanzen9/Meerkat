@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { BridgeError } from '../errors';
 import type { ReviewChange, ReviewHostState, ReviewScope } from './reviewWorkspace';
+import { AGENT_IDLE_TIMEOUT_MS } from '../../../shared/bridgeTiming';
 
 export const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_SNAPSHOT_BYTES = 24 * MAX_FILE_BYTES;
@@ -78,7 +79,7 @@ export class ReviewGit {
           cwd: this.root,
           encoding: 'buffer',
           maxBuffer: MAX_SNAPSHOT_BYTES,
-          timeout: 15000,
+          timeout: AGENT_IDLE_TIMEOUT_MS,
           ...(signal ? { signal } : {}),
           env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
         },

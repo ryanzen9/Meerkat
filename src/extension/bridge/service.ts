@@ -62,11 +62,7 @@ export class BridgeService implements vscode.Disposable {
     });
     registry.register(() => new OpenAIChatGPTProvider(auth));
     this.reviewWorkspace = new VSCodeReviewWorkspace(this.output);
-    this.runtime = new BridgeRuntime(
-      registry,
-      120000,
-      () => new ReviewContext(this.reviewWorkspace!),
-    );
+    this.runtime = new BridgeRuntime(registry, {}, () => new ReviewContext(this.reviewWorkspace!));
     await registry.initialize();
     let baseUrl = '';
     this.api = createBridgeApi({

@@ -110,6 +110,72 @@ test('Git hunks have correct insertion coordinates and produce an applicable pat
   expect(diff.truncated).toBe(false);
 });
 
+test('staged route-file reads treat brackets literally and accept an end past EOF', async () => {
+  const path = 'app/[locale]/projects/page.tsx';
+  const f = await reviewFixture({ [path]: 'export default "HEAD";\n' });
+  await f.write(path, 'export default "staged";\n');
+  await f.git('add', '--', path);
+  await f.write(path, 'export default "working-tree";\n');
+  const { reviewId } = await f.context.listChanges({ scope: 'staged' });
+  const result = await f.context.readFile({
+    reviewId,
+    path,
+    version: 'new',
+    startLine: 1,
+    endLine: 100,
+  });
+  expect(result.lines).toEqual([{ line: 1, text: 'export default "staged";' }]);
+  expect(result.endLine).toBe(1);
+  expect(result.truncated).toBe(false);
+});
+
+test('live search can find an untracked route that a staged snapshot cannot read', async () => {
+  const f = await reviewFixture();
+  const path = 'app/[locale]/projects/page.tsx';
+  const body = 'export default "untracked projects page";\n';
+  await f.write('file.ts', 'staged change\n');
+  await f.git('add', 'file.ts');
+  await f.write(path, body);
+  const staged = await f.context.listChanges({ scope: 'staged' });
+  expect(staged.changes.map((change) => change.path)).toEqual(['file.ts']);
+  const found = await f.context.searchCode({ query: 'untracked projects page' });
+  expect(found.matches[0]?.path).toBe(path);
+  const tools = reviewTools(f.context);
+  const result = await tools.read_file.execute!(
+    { reviewId: staged.reviewId, path, version: 'new', startLine: 1, endLine: 100 },
+    { toolCallId: 'read', messages: [], context: {} },
+  );
+  expect(result).toMatchObject({ error: { code: 'file_not_found' } });
+  if (!('error' in result)) throw new Error('Expected a snapshot mismatch');
+  expect(result.error.message).toContain(path);
+  expect(result.error.message).toContain('"staged" review snapshot (Git index)');
+  expect(result.error.message).toContain('Untracked files');
+  expect(result.error.message).toContain('search_code searches live files');
+  expect(JSON.stringify(result)).not.toContain(body.trim());
+  const all = await f.context.listChanges({ scope: 'all' });
+  expect(
+    (
+      await f.context.readFile({
+        reviewId: all.reviewId,
+        path,
+        version: 'new',
+        startLine: 1,
+        endLine: 100,
+      })
+    ).lines,
+  ).toEqual([{ line: 1, text: body.trim() }]);
+  // A later snapshot that includes the path never changes the staged snapshot.
+  await expect(
+    f.context.readFile({
+      reviewId: staged.reviewId,
+      path,
+      version: 'new',
+      startLine: 1,
+      endLine: 100,
+    }),
+  ).rejects.toMatchObject({ code: 'file_not_found' });
+});
+
 test('additions, deletions, edited renames, binary files and executable modes are represented', async () => {
   const f = await reviewFixture({
     'old name.ts': 'one\ntwo\nthree\nfour\nfive\n',

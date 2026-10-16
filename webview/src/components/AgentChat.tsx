@@ -1,11 +1,17 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
-import { ActionBarPrimitive, useAuiState } from '@assistant-ui/react';
+import { ActionBarPrimitive, useAui, useAuiState } from '@assistant-ui/react';
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
 import type { GitRepositoryInfo, PanelSnapshot } from '@shared/models';
 import { ReviewGitContext } from './GitStatusLine';
 import { Icon } from './Icon';
 import { Thread, type ThreadComponents } from './assistant-ui/elements/thread.aui';
+import {
+  EmptyState,
+  EmptyStateGreeting,
+  EmptyStateSuggestion,
+  EmptyStateSuggestions,
+} from './assistant-ui/elements/empty-state';
 import { MarkdownText } from './assistant-ui/elements/markdown-text';
 import { cn } from '../lib/utils';
 import { isFileReferenceId } from '@shared/protocol';
@@ -177,34 +183,29 @@ function CopyResponse() {
   );
 }
 
-const WelcomeContext = createContext({ authenticated: false, onFiles: () => {} });
+const INITIAL_PROMPTS = [
+  '审查当前工作区的改动，找出潜在问题',
+  '总结这次改动的内容与风险点',
+  '检查边界情况和测试是否有遗漏',
+];
 
 function ReviewWelcome() {
-  const { authenticated, onFiles } = useContext(WelcomeContext);
+  const aui = useAui();
   return (
-    <div className="aui-thread-welcome-root mb-6 flex flex-col items-start px-2">
-      <span className="mb-4 flex size-10 items-center justify-center rounded-xl border border-widget bg-surface text-link">
-        <Icon name="review" className="size-6" />
-      </span>
-      <h2 className="mb-2 text-[1.15rem] font-semibold">从变更开始对话</h2>
-      <p className="mb-4 max-w-80 text-[0.9rem] leading-relaxed text-muted">
-        查看工作区中的文件变更，记录你想让 Agent 审查的问题。
-      </p>
-      <button
-        type="button"
-        onClick={onFiles}
-        className="flex items-center gap-2 rounded-md border border-widget bg-surface px-3 py-2 text-[0.85rem] hover:bg-hover"
-      >
-        <Icon name="file" className="size-3.5" />
-        查看文件变更
-        <Icon name="chevron" className="size-3" />
-      </button>
-      <p className="mt-5 text-[0.8rem] text-muted">
-        {authenticated
-          ? 'ChatGPT 已连接。仅发送你输入的内容。'
-          : 'Continue with ChatGPT 后开始对话。'}
-      </p>
-    </div>
+    <EmptyState className="mx-auto mb-6 px-2">
+      <EmptyStateGreeting>你好，今天想审查什么？</EmptyStateGreeting>
+      <EmptyStateSuggestions>
+        {INITIAL_PROMPTS.map((prompt, index) => (
+          <EmptyStateSuggestion
+            key={prompt}
+            index={index}
+            onClick={() => aui.thread.append(prompt)}
+          >
+            {prompt}
+          </EmptyStateSuggestion>
+        ))}
+      </EmptyStateSuggestions>
+    </EmptyState>
   );
 }
 
@@ -231,24 +232,18 @@ const THREAD_COMPONENTS: ThreadComponents = {
 };
 
 export function AgentChat({
-  authenticated,
-  onFiles,
   snapshot,
   repository,
   ...composer
 }: ReviewComposerState & {
-  authenticated: boolean;
-  onFiles(): void;
   snapshot: PanelSnapshot | null;
   repository: GitRepositoryInfo | undefined;
 }) {
   return (
-    <WelcomeContext.Provider value={{ authenticated, onFiles }}>
-      <ReviewGitContext.Provider value={{ snapshot, repository }}>
-        <ReviewComposerContext.Provider value={composer}>
-          <Thread components={THREAD_COMPONENTS} autoFocus={false} />
-        </ReviewComposerContext.Provider>
-      </ReviewGitContext.Provider>
-    </WelcomeContext.Provider>
+    <ReviewGitContext.Provider value={{ snapshot, repository }}>
+      <ReviewComposerContext.Provider value={composer}>
+        <Thread components={THREAD_COMPONENTS} autoFocus={false} />
+      </ReviewComposerContext.Provider>
+    </ReviewGitContext.Provider>
   );
 }

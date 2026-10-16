@@ -20,8 +20,7 @@ Bridge 及其运行依赖在根工程的 `src/extension/` 与 `package.json` 中
 2. 点击 **Continue with ChatGPT**，也可执行同名 Meerkat 命令。扩展先启动 `127.0.0.1` 临时端口上的 callback listener，再打开系统浏览器。
 3. 在 OpenAI 页面完成登录、动态注册与 ChatGPT plan usage 授权。无需固定 Client ID、Platform API Key、client secret、Codex CLI 或 app-server。
 4. 浏览器显示登录完成后回到面板。模型下拉框来自该账户的实时 `/v1/models` catalog，OAuth 响应保持官方顺序，只显示 `visibility: list` 的模型；解析器也兼容通用 API 的 `data[].id` 格式。
-5. 发送文字或粘贴代码，观察文字逐步生成。可发送“用 inspect_text 检查这段代码的 TODO 标记”测试 Function Tool。点击 **停止**取消。切换模型会开始新会话。
-6. 退出并重启扩展后，OAuth 凭据从 VS Code SecretStorage 恢复；下一次模型列表/推理请求在令牌接近到期时刷新。登出会先停止运行、尝试撤销 refresh token，再清除本机令牌；远端撤销未确认时面板给出说明。
+5. 退出并重启扩展后，OAuth 凭据从 VS Code SecretStorage 恢复；下一次模型列表/推理请求在令牌接近到期时刷新。登出会先停止运行、尝试撤销 refresh token，再清除本机令牌；远端撤销未确认时面板给出说明。
 
 **Thinking：**模型目录返回的 `supported_reasoning_levels` / `default_reasoning_level` 或 `supportedReasoningEfforts` / `defaultReasoningEffort` 会统一为 Bridge 的 `supportedReasoningEfforts` 和 `defaultReasoningEffort`。仅展示上游提供且当前 SDK 支持的档位；缺少能力数据时返回空列表并隐藏 Thinking。默认档位会显示在选择器中，用户选择随会话保存。调整 Thinking 会保留同一会话的上下文，并通过每次 turn 的 `reasoningEffort` 传到 AI SDK OpenAI Provider 的 `providerOptions.openai.reasoningEffort`。生成期间禁用调整，Host 校验档位属于该会话模型的能力范围。
 
@@ -110,12 +109,16 @@ flowchart LR
 | ----------------------- | ------------------------------------------------------------------------------------------------------ |
 | `auth`                  | OAuth、凭证存储、刷新和账户隔离                                                                        |
 | `providers`             | `ModelProvider` 接口与注册表；提供 AI SDK `LanguageModel` 和厂商配置，OpenAI 适配使用 `@ai-sdk/openai` |
-| `runtime/reviewAgent`   | 统一 `ToolLoopAgent` 配置、8 步工具循环、`toUIMessageStream`、成功历史提交                             |
-| `runtime/bridgeRuntime` | run 状态、同会话互斥、取消、超时和关闭                                                                 |
+| `runtime/reviewAgent`   | 统一 `ToolLoopAgent` 配置、自然结束及可配置的 `stopWhen`、单次工具无响应超时、UI 流和成功历史提交      |
+| `runtime/bridgeRuntime` | run 状态、同会话互斥、取消、无响应计时和关闭                                                           |
 | `sessions`              | Host 会话绑定及完整 `ModelMessage[]`，保留工具结果、namespace 和 encrypted reasoning metadata          |
 | `tools`                 | 通过 AI SDK `tool()` 定义厂商无关的本地工具                                                            |
 | `transport`             | IPC Fetch 代理、响应头、ACK 背压与取消传播                                                             |
 | `server`                | 共用 Request/Response API 与受保护的 loopback HTTP 入口                                                |
+
+默认使用 `isLoopFinished()`，由 Agent 根据模型的结束状态自然收尾，不限制工具推理轮数，也不强制插入总结轮。`ReviewAgentOptions.stopWhen` 支持按工具结果等业务条件配置停止判断；显式配置的停止条件结束工具循环时，保留已完成的工具结果。
+
+`ReviewAgentOptions.idleTimeoutMs` 默认 5 分钟，按无响应间隔计时，不限制整次审查时长。模型或工具有输出就重置整轮等待计时；每个并行工具另有独立计时，工具的中间结果会重置它自己的计时，其他工具的输出不会掩盖该工具卡住。超时会取消本轮并保留此前成功的会话历史。Host 代理与 Webview 使用比后端多 15 秒的传输空闲超时，并在收到响应时重置，避免旧的 2/2.5 分钟整轮限制提前中断长任务。
 
 新增厂商时实现 `ModelProvider`，用对应的官方 AI SDK Provider 创建模型，并通过 `resolveModel()` 返回 `model`、`providerOptions` 和可选的工具厂商选项。在 `BridgeService` 注册适配器即可复用共享 Agent、工具、历史与消息流；厂商适配器不实现 Agent 循环、UI 流或专有 SDK Session。认证与模型目录仍由适配器管理。
 

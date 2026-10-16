@@ -1,9 +1,17 @@
 import type { ModelProvider } from '../src/extension/bridge/providers/types';
 import { SessionStore, type BridgeSession } from '../src/extension/bridge/sessions/store';
-import { streamReviewAgent } from '../src/extension/bridge/runtime/reviewAgent';
+import {
+  streamReviewAgent,
+  type ReviewAgentOptions,
+} from '../src/extension/bridge/runtime/reviewAgent';
 import type { ReasoningEffort } from '../src/shared/agentModels';
+import type { ReviewContext } from '../src/extension/bridge/tools/reviewContext';
 
-export function agentHarness(provider: ModelProvider) {
+export function agentHarness(
+  provider: ModelProvider,
+  options: ReviewAgentOptions = {},
+  context?: ReviewContext,
+) {
   const sessions = new SessionStore();
   return {
     listModels: (signal: AbortSignal) => provider.listModels(signal),
@@ -11,7 +19,7 @@ export function agentHarness(provider: ModelProvider) {
       return sessions.create(provider.info.id, await provider.createSession(model, signal));
     },
     run: (session: BridgeSession, text: string, signal: AbortSignal, effort?: ReasoningEffort) =>
-      streamReviewAgent(provider, session, text, signal, effort),
+      streamReviewAgent(provider, session, text, signal, effort, context, options),
     async deleteSession(session: BridgeSession) {
       sessions.delete(session.id);
     },

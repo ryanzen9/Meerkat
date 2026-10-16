@@ -22,7 +22,7 @@ function setup(http?: HttpFetch, timeoutMs?: number) {
         ? http(url, init)
         : sse(responseEvents('Hello'));
   registry.register(() => new OpenAIChatGPTProvider(signedInAuth(), models));
-  const runtime = new BridgeRuntime(registry, timeoutMs);
+  const runtime = new BridgeRuntime(registry, { idleTimeoutMs: timeoutMs });
   const api = createBridgeApi({
     runtime,
     callbackUri: () => 'http://127.0.0.1:1234/auth/callback',
@@ -173,7 +173,7 @@ test('a quota failure after streaming starts yields a safe error and a failed ru
   }
 });
 
-test('per-session exclusion, pre-consumption cancellation and run timeout never strand shutdown', async () => {
+test('per-session exclusion, pre-consumption cancellation and idle timeout never strand shutdown', async () => {
   const f = setup(undefined, 20);
   try {
     const id = await session(f.api);
@@ -189,6 +189,76 @@ test('per-session exclusion, pre-consumption cancellation and run timeout never 
     await Bun.sleep(30);
     expect(f.runtime.status(timeout.runId).status).toBe('cancelled');
     await f.runtime.cancelProvider('openai-agents');
+  } finally {
+    await f.runtime.dispose();
+  }
+});
+
+test('progress across multiple model rounds resets inactivity instead of limiting run duration', async () => {
+  let calls = 0;
+  const f = setup(async () => {
+    await Bun.sleep(40);
+    calls++;
+    return sse(
+      responseEvents(
+        'Review completed',
+        calls <= 5
+          ? [
+              {
+                id: `fc_${calls}`,
+                type: 'function_call',
+                call_id: `call_${calls}`,
+                name: 'search_code',
+                namespace: 'review',
+                arguments: JSON.stringify({ query: 'progress' }),
+                status: 'completed',
+              },
+            ]
+          : undefined,
+      ),
+    );
+  }, 120);
+  try {
+    const id = await session(f.api);
+    const response = await f.api(
+      request(`/v1/sessions/${id}/messages`, 'POST', { text: 'Long review' }),
+    );
+    const text = await response.text();
+    expect(calls).toBe(6);
+    expect(text).toContain('Review completed');
+    expect(text).not.toContain('run_idle_timeout');
+    expect(f.runtime.status(response.headers.get('x-bridge-run-id')!).status).toBe('completed');
+  } finally {
+    await f.runtime.dispose();
+  }
+});
+
+test('a model request with no response is cancelled by inactivity and aborts its fetch', async () => {
+  let aborted = false;
+  const f = setup(
+    async (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init!.signal!.addEventListener(
+          'abort',
+          () => {
+            aborted = true;
+            reject(init!.signal!.reason);
+          },
+          { once: true },
+        );
+      }),
+    40,
+  );
+  try {
+    const id = await session(f.api);
+    const response = await f.api(
+      request(`/v1/sessions/${id}/messages`, 'POST', { text: 'Wait for response' }),
+    );
+    const text = await response.text();
+    expect(text).toContain('run_idle_timeout');
+    expect(aborted).toBe(true);
+    expect(f.runtime.status(response.headers.get('x-bridge-run-id')!).status).toBe('cancelled');
+    expect(f.runtime.sessions.get(id).history.getMessages()).toEqual([]);
   } finally {
     await f.runtime.dispose();
   }
@@ -306,4 +376,63 @@ test('webview proxy validates IPC, preserves UTF-8 and waits for ACK before anot
   ).toBe(false);
   expect(publicError(new Error('Bearer test-access-secret')).message).not.toContain('secret');
   proxy.dispose();
+});
+
+test('Host proxy keeps an active stream alive past its inactivity interval', async () => {
+  const sent: ExtensionToWebviewMessage[] = [];
+  let index = 0;
+  const body = new ReadableStream<Uint8Array>({
+    async pull(output) {
+      await Bun.sleep(35);
+      if (++index <= 5) output.enqueue(new TextEncoder().encode('progress'));
+      else output.close();
+    },
+  });
+  const proxy = new WebviewBridgeProxy(
+    async () => new Response(body),
+    async (message) => {
+      sent.push(message);
+      if (message.type === 'host/bridge-chunk') queueMicrotask(() => proxy.ack(message.requestId));
+    },
+    100,
+  );
+  try {
+    await proxy.send({ requestId: 'progress', path: '/v1/providers', method: 'GET' });
+    expect(sent.filter((message) => message.type === 'host/bridge-chunk')).toHaveLength(5);
+    expect(sent.at(-1)?.type).toBe('host/bridge-end');
+  } finally {
+    proxy.dispose();
+  }
+});
+
+test('Host proxy cancels a transport that never returns a response', async () => {
+  const sent: ExtensionToWebviewMessage[] = [];
+  let aborted = false;
+  const proxy = new WebviewBridgeProxy(
+    async (_path, _method, _body, signal) =>
+      new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener(
+          'abort',
+          () => {
+            aborted = true;
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      }),
+    async (message) => {
+      sent.push(message);
+    },
+    25,
+  );
+  try {
+    await proxy.send({ requestId: 'idle', path: '/v1/providers', method: 'GET' });
+    expect(aborted).toBe(true);
+    expect(sent.at(-1)).toMatchObject({
+      type: 'host/bridge-error',
+      message: expect.stringContaining('bridge_idle_timeout'),
+    });
+  } finally {
+    proxy.dispose();
+  }
 });

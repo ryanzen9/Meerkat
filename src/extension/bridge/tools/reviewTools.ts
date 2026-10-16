@@ -55,7 +55,7 @@ export function reviewTools(context?: ReviewToolContext) {
     }),
     read_file: tool({
       description:
-        'Read numbered lines from the old or new side of a review snapshot, including unchanged files. Use the appropriate original/renamed path. Ranges are 1-based, inclusive, up to 500 lines. Follow nextStartLine for further context; contentTruncated flags an overlong line.',
+        'Read numbered lines from the old or new side of a review snapshot, including unchanged files. Use the appropriate original/renamed path. For staged reviews, new is the Git index: untracked files and new files that have not been staged are unavailable, even if search_code finds them. On file_not_found, verify the exact path and version from list_changes/get_diff; preserve the requested review scope. Ranges are 1-based, inclusive, up to 500 lines. Follow nextStartLine for further context; contentTruncated flags an overlong line.',
       inputSchema: z.object({
         reviewId,
         path,
@@ -94,7 +94,7 @@ export function reviewTools(context?: ReviewToolContext) {
     }),
     search_code: tool({
       description:
-        'Search current repository files for a case-sensitive literal query, optionally filtered by a VS Code glob. Returns 1-based locations and surrounding lines, including unsaved overlays. This is a live search, not a snapshot search. Binary, large and inaccessible files are skipped; scans at most 2,000 files.',
+        'Search current repository files for a case-sensitive literal query, optionally filtered by a VS Code glob. Returns 1-based locations and surrounding lines, including unsaved overlays. This is a live search, not a snapshot search: matches can include untracked or unstaged files absent from a staged snapshot. Confirm snapshot availability before using a match as review evidence. Binary, large and inaccessible files are skipped; scans at most 2,000 files.',
       inputSchema: z.object({
         query: z
           .string()
@@ -113,20 +113,6 @@ export function reviewTools(context?: ReviewToolContext) {
       inputSchema: z.object({ paths }),
       execute: (input, { abortSignal }) =>
         execute(abortSignal, (service) => service.getDiagnostics(input, abortSignal)),
-    }),
-    inspect_text: tool({
-      description: 'Count lines and locate TODO/FIXME markers in user-provided source text.',
-      inputSchema: z.object({ text: z.string().max(100000) }),
-      execute: async ({ text }, { abortSignal }) => {
-        abortSignal?.throwIfAborted();
-        const lines = text.split('\n');
-        return JSON.stringify({
-          lineCount: lines.length,
-          markers: lines.flatMap((line, index) =>
-            /\b(TODO|FIXME)\b/.test(line) ? [{ line: index + 1, text: line.trim() }] : [],
-          ),
-        });
-      },
     }),
   };
 }

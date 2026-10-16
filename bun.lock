@@ -44,7 +44,7 @@
         "react-dom": "19.3.0",
         "react-syntax-highlighter": "16.1.2",
         "remark-gfm": "4.0.1",
-        "tw-shimmer": "0.4.13",
+        "tw-shimmer": "^0.4.14",
         "zustand": "5.0.15",
       },
       "devDependencies": {
@@ -1110,7 +1110,7 @@
 
     "tunnel": ["tunnel@0.0.6", "", {}, "sha512-1h/Lnq9yajKY2PEbBadPXj3VxsDDu844OnaAo52UVmIzIvwwtBPIuNvkjuzBlTWpfJyUbG3ez0KSBibQkj4ojg=="],
 
-    "tw-shimmer": ["tw-shimmer@0.4.13", "", { "peerDependencies": { "tailwindcss": ">=4.0.0-0" } }, "sha512-hEkTdCdOeDAr/Yx37U/W6BQjiXjLkGxugVIHsbCdSGDGHWzWMSyNNAqH+wVt0TinAtVsRsnwPYrIDbt2HSUAQg=="],
+    "tw-shimmer": ["tw-shimmer@0.4.14", "", { "peerDependencies": { "tailwindcss": ">=4.0.0-0" } }, "sha512-Df4Mhpxa/b/YYvwCxhe6M/C0pZ1bYxFkAUrMjgmRO2vimu+QYi1gNHxV+9ZNTMpBtLJHEq9p6zuSzC7wiPeYYA=="],
 
     "typed-rest-client": ["typed-rest-client@1.8.11", "", { "dependencies": { "qs": "^6.9.1", "tunnel": "0.0.6", "underscore": "^1.12.1" } }, "sha512-5UvfMpd1oelmUPRbbaVnq+rHP7ng2cE4qoQkQeAqxRL6PklkxsM0g32/HL0yfvruK6ojQ5x8EE+HF4YV6DtuCA=="],
 

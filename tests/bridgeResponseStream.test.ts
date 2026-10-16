@@ -4,6 +4,7 @@ import type { UIMessageChunk } from 'ai';
 import { OpenAIChatGPTProvider } from '../src/extension/bridge/providers/openai/provider';
 import { restoreCompletedOutput } from '../src/extension/bridge/providers/openai/responseStream';
 import { responseEvents, signedInAuth, sse } from './bridgeFixture';
+import { reviewFixture } from './reviewFixture';
 
 function missingTerminalOutput(events: Record<string, unknown>[]) {
   return events.map((event) =>
@@ -81,6 +82,7 @@ for (const terminalStatus of ['completed', undefined, 'in_progress']) {
 }
 
 test('missing terminal output still executes a Function Tool and stops after its answer', async () => {
+  const fixture = await reviewFixture({ 'file.ts': '// TODO: inspect' });
   const bodies: Record<string, unknown>[] = [];
   const provider = agentHarness(
     new OpenAIChatGPTProvider(signedInAuth(), async (url, init) => {
@@ -93,28 +95,31 @@ test('missing terminal output still executes a Function Tool and stops after its
                 id: 'fc_fixture',
                 type: 'function_call',
                 call_id: 'call_fixture',
-                name: 'inspect_text',
+                name: 'search_code',
                 namespace: 'review',
-                arguments: JSON.stringify({ text: '// TODO: inspect' }),
+                arguments: JSON.stringify({ query: 'TODO' }),
                 status: 'completed',
               },
             ])
-          : responseEvents('Inspected');
+          : responseEvents('Searched');
       const response = sse(missingTerminalOutput(events));
       response.headers.delete('content-type');
       return response;
     }),
+    {},
+    fixture.context,
   );
   const signal = new AbortController().signal;
   const session = await provider.createSession('fixture-model', signal);
   try {
-    const parts = await chunks(await provider.run(session, 'inspect this', signal));
+    const parts = await chunks(await provider.run(session, 'search this', signal));
     expect(bodies).toHaveLength(2);
     expect(parts.filter((part) => part.type === 'tool-input-available')).toHaveLength(1);
     expect(parts.filter((part) => part.type === 'tool-output-available')).toHaveLength(1);
-    expect(text(parts)).toBe('Inspected');
+    expect(text(parts)).toBe('Searched');
     expect(JSON.stringify(bodies[1]!.input)).toContain('function_call_output');
-    expect(JSON.stringify(bodies[1]!.input)).toContain('lineCount');
+    expect(JSON.stringify(bodies[1]!.input)).toContain('matches');
+    expect(JSON.stringify(bodies[1]!.input)).toContain('file.ts');
   } finally {
     await provider.deleteSession(session);
     await provider.dispose();

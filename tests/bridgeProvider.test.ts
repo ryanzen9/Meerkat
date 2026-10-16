@@ -1,6 +1,6 @@
 import { agentHarness } from './bridgeFixture';
 import { expect, test } from 'bun:test';
-import { createUIMessageStreamResponse } from 'ai';
+import { createUIMessageStreamResponse, hasToolCall } from 'ai';
 import { OpenAIChatGPTProvider } from '../src/extension/bridge/providers/openai/provider';
 import {
   unsupportedFields,
@@ -8,6 +8,7 @@ import {
 } from '../src/extension/bridge/providers/openai/compatibility';
 import type { HttpFetch } from '../src/extension/bridge/http';
 import { signedInAuth, responseEvents, sse } from './bridgeFixture';
+import { reviewFixture } from './reviewFixture';
 
 test('real AI SDK agent emits compliant requests and official UI streams with full multi-turn history', async () => {
   const bodies: Record<string, unknown>[] = [];
@@ -47,7 +48,18 @@ test('real AI SDK agent emits compliant requests and official UI streams with fu
     expect(body.stream).toBe(true);
     for (const key of unsupportedFields) expect(body[key]).toBeUndefined();
     expect(JSON.stringify(body.tools)).toContain('"type":"namespace"');
-    expect(JSON.stringify(body.tools)).toContain('inspect_text');
+    const namespaces = body.tools as { name: string; tools: { name: string }[] }[];
+    expect(namespaces).toHaveLength(1);
+    expect(namespaces[0]!.name).toBe('review');
+    expect(namespaces[0]!.tools.map((tool) => tool.name).toSorted()).toEqual([
+      'cite_files',
+      'get_diagnostics',
+      'get_diff',
+      'get_review_context',
+      'list_changes',
+      'read_file',
+      'search_code',
+    ]);
   }
   expect(JSON.stringify(bodies[1]!.input)).toContain('first user turn');
   expect(JSON.stringify(bodies[1]!.input)).toContain('second user turn');
@@ -55,6 +67,7 @@ test('real AI SDK agent emits compliant requests and official UI streams with fu
 });
 
 test('real AI SDK Function Tool execution round-trips through SDK and produces tool input/output UI events', async () => {
+  const fixture = await reviewFixture({ 'file.ts': '// TODO: inspect\nconst a = 1;' });
   let calls = 0;
   const bodies: Record<string, unknown>[] = [];
   const provider = agentHarness(
@@ -72,15 +85,17 @@ test('real AI SDK Function Tool execution round-trips through SDK and produces t
                 id: 'fc_fixture',
                 type: 'function_call',
                 call_id: 'call_fixture',
-                name: 'inspect_text',
+                name: 'search_code',
                 namespace: 'review',
-                arguments: JSON.stringify({ text: '// TODO: inspect\nconst a = 1;' }),
+                arguments: JSON.stringify({ query: 'TODO' }),
                 status: 'completed',
               },
             ]),
           )
-        : sse(responseEvents('Inspected'));
+        : sse(responseEvents('Searched'));
     }),
+    {},
+    fixture.context,
   );
   const signal = new AbortController().signal;
   const session = await provider.createSession('fixture-model', signal);
@@ -90,7 +105,8 @@ test('real AI SDK Function Tool execution round-trips through SDK and produces t
   expect(calls).toBe(2);
   expect(output).toContain('tool-input-available');
   expect(output).toContain('tool-output-available');
-  expect(output).toContain('lineCount');
+  expect(output).toContain('matches');
+  expect(output).toContain('file.ts');
   expect(JSON.stringify(bodies[1]!.input)).toContain('function_call_output');
   validatePlanRequest(bodies[1]);
   await createUIMessageStreamResponse({
@@ -99,11 +115,11 @@ test('real AI SDK Function Tool execution round-trips through SDK and produces t
   const nextInput = bodies[2]!.input as Record<string, unknown>[];
   expect(nextInput.find((item) => item.type === 'function_call')).toMatchObject({
     namespace: 'review',
-    name: 'inspect_text',
+    name: 'search_code',
     call_id: 'call_fixture',
   });
   expect(JSON.stringify(nextInput)).toContain('function_call_output');
-  expect(JSON.stringify(nextInput)).toContain('lineCount');
+  expect(JSON.stringify(nextInput)).toContain('matches');
 });
 
 test('SDK failures and truncated streams do not commit an unsuccessful turn', async () => {
@@ -201,8 +217,51 @@ test('compatibility layer rejects unsupported fields, nonnamespace tools and sys
   ).toThrow('developer');
 });
 
-test('the shared AI SDK agent bounds a repeated tool loop and preserves prior successful history', async () => {
-  let looping = false;
+const searchResponse = (step: number) =>
+  sse(
+    responseEvents('', [
+      {
+        id: `fc_${step}`,
+        type: 'function_call',
+        call_id: `call_${step}`,
+        name: 'search_code',
+        namespace: 'review',
+        arguments: JSON.stringify({ query: `search ${step}` }),
+        status: 'completed',
+      },
+    ]),
+  );
+
+test('reviews run beyond SDK and previous step caps until the model finishes', async () => {
+  let calls = 0;
+  const backend = agentHarness(
+    new OpenAIChatGPTProvider(signedInAuth(), async (url, init) => {
+      if (String(url).endsWith('/models'))
+        return Response.json({
+          models: [{ slug: 'fixture-model', display_name: 'Fixture', visibility: 'list' }],
+        });
+      validatePlanRequest(JSON.parse(init!.body as string));
+      calls++;
+      expect(JSON.parse(init!.body as string).tool_choice).not.toBe('none');
+      return calls <= 40
+        ? searchResponse(calls)
+        : sse(responseEvents('Review completed after forty tool rounds.'));
+    }),
+  );
+  const signal = new AbortController().signal;
+  const session = await backend.createSession('fixture-model', signal);
+  const output = await createUIMessageStreamResponse({
+    stream: await backend.run(session, 'Review these changes', signal),
+  }).text();
+  expect(calls).toBe(41);
+  expect(output.match(/"type":"tool-output-available"/g)).toHaveLength(40);
+  expect(output).toContain('Review completed after forty tool rounds.');
+  expect(JSON.stringify(session.history.getMessages())).toContain(
+    'Review completed after forty tool rounds.',
+  );
+});
+
+test('a configured stop condition can end the loop on a tool result', async () => {
   let calls = 0;
   const backend = agentHarness(
     new OpenAIChatGPTProvider(signedInAuth(), async (url) => {
@@ -210,40 +269,47 @@ test('the shared AI SDK agent bounds a repeated tool loop and preserves prior su
         return Response.json({
           models: [{ slug: 'fixture-model', display_name: 'Fixture', visibility: 'list' }],
         });
-      calls++;
-      return sse(
-        responseEvents(
-          'saved answer',
-          looping
-            ? [
-                {
-                  id: `fc_${calls}`,
-                  type: 'function_call',
-                  call_id: `call_${calls}`,
-                  name: 'inspect_text',
-                  namespace: 'review',
-                  arguments: JSON.stringify({ text: '// TODO: repeated' }),
-                  status: 'completed',
-                },
-              ]
-            : undefined,
-        ),
-      );
+      return searchResponse(++calls);
     }),
+    { stopWhen: hasToolCall('search_code') },
   );
   const signal = new AbortController().signal;
   const session = await backend.createSession('fixture-model', signal);
+  const output = await createUIMessageStreamResponse({
+    stream: await backend.run(session, 'Search the code', signal),
+  }).text();
+  expect(calls).toBe(1);
+  expect(output).toContain('tool-output-available');
+  expect(JSON.stringify(session.history.getMessages())).toContain('search 1');
+});
+
+test('explicit cancellation stops a continuing loop and preserves prior successful history', async () => {
+  let looping = false;
+  let calls = 0;
+  const controller = new AbortController();
+  const backend = agentHarness(
+    new OpenAIChatGPTProvider(signedInAuth(), async (url) => {
+      if (String(url).endsWith('/models'))
+        return Response.json({
+          models: [{ slug: 'fixture-model', display_name: 'Fixture', visibility: 'list' }],
+        });
+      calls++;
+      if (looping && calls === 42) controller.abort();
+      return looping ? searchResponse(calls) : sse(responseEvents('saved answer'));
+    }),
+  );
+  const session = await backend.createSession('fixture-model', controller.signal);
   await createUIMessageStreamResponse({
-    stream: await backend.run(session, 'saved question', signal),
+    stream: await backend.run(session, 'saved question', controller.signal),
   }).text();
   const original = session.history.getMessages();
   looping = true;
   await expect(
     createUIMessageStreamResponse({
-      stream: await backend.run(session, 'loop forever', signal),
+      stream: await backend.run(session, 'keep reviewing', controller.signal),
     }).text(),
-  ).rejects.toMatchObject({ code: 'inference_incomplete' });
-  expect(calls).toBe(9); // One successful turn, then the configured eight-step limit.
+  ).rejects.toMatchObject({ code: 'run_cancelled' });
+  expect(calls).toBe(42);
   expect(session.history.getMessages()).toEqual(original);
 });
 
