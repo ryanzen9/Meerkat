@@ -1,6 +1,14 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
-import { ActionBarPrimitive, useAuiState } from '@assistant-ui/react';
+import {
+  ActionBarPrimitive,
+  AuiConfig,
+  Tools,
+  defineToolkit,
+  makeAssistantDataUI,
+  useAuiState,
+  type ToolCallMessagePartComponent,
+} from '@assistant-ui/react';
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
 import type { GitRepositoryInfo, PanelSnapshot } from '@shared/models';
 import { ReviewGitContext } from './GitStatusLine';
@@ -9,6 +17,13 @@ import { Thread, type ThreadComponents } from './assistant-ui/elements/thread.au
 import { MarkdownText } from './assistant-ui/elements/markdown-text';
 import { cn } from '../lib/utils';
 import { isFileReferenceId } from '@shared/protocol';
+import type {
+  FinishReviewInput,
+  ReviewFinding,
+  ReviewRunState,
+  SubmitReviewInput,
+  SubmitReviewResult,
+} from '@shared/review';
 import {
   ReviewComposerContext,
   ReviewComposerInput,
@@ -24,6 +39,110 @@ interface ChatActions {
   copy(text: string): Promise<unknown>;
 }
 export const ChatActionsContext = createContext<ChatActions | null>(null);
+
+export function ReviewFindingCard({
+  finding,
+  openReference,
+}: {
+  finding: ReviewFinding;
+  openReference(referenceId: string): Promise<unknown>;
+}) {
+  return (
+    <article
+      data-review-finding={finding.id}
+      aria-label={`${finding.priority} ${finding.title}`}
+      className="my-3 rounded-lg border border-widget bg-surface p-3"
+    >
+      <div className="mb-2 flex items-start gap-2">
+        <span className="rounded bg-code px-1.5 py-0.5 font-mono text-xs font-semibold">
+          {finding.priority}
+        </span>
+        <h3 className="min-w-0 flex-1 text-sm font-semibold wrap-anywhere">{finding.title}</h3>
+        <span className="shrink-0 text-xs text-muted">已保存</span>
+      </div>
+      <p className="text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap">
+        {finding.description}
+      </p>
+      <ul aria-label="已验证的代码引用" className="mt-3 flex flex-wrap gap-2">
+        {finding.references.map((reference) => (
+          <li key={reference.referenceId}>
+            <button
+              type="button"
+              className="rounded-sm bg-code px-1 py-0.5 font-mono text-xs text-link underline underline-offset-2"
+              onClick={() => {
+                void openReference(reference.referenceId).catch(() => {});
+              }}
+            >
+              {reference.label}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </article>
+  );
+}
+
+type ToolFailure = { error: { code: string; message: string } };
+const ReviewFindingTool: ToolCallMessagePartComponent<
+  SubmitReviewInput,
+  SubmitReviewResult | ToolFailure
+> = ({ result, toolCallId }) => {
+  const actions = useContext(ChatActionsContext)!;
+  if (!result) return null;
+  if ('error' in result)
+    return <p className="my-2 text-xs text-muted">意见尚未收录：{result.error.message}</p>;
+  if (!result.accepted || result.finding.toolCallId !== toolCallId) return null;
+  return <ReviewFindingCard finding={result.finding} openReference={actions.openReference} />;
+};
+const ReviewFinishTool: ToolCallMessagePartComponent<
+  FinishReviewInput,
+  { accepted: true; status: 'completed' | 'incomplete' } | ToolFailure
+> = ({ result }) =>
+  result && 'error' in result ? (
+    <p className="my-2 text-xs text-muted">收尾校验未通过：{result.error.message}</p>
+  ) : null;
+
+const reviewToolkit = defineToolkit({
+  submit_review: { type: 'backend', display: 'standalone', render: ReviewFindingTool },
+  finish_review: { type: 'backend', display: 'standalone', render: ReviewFinishTool },
+});
+export const reviewToolConfig = AuiConfig({ tools: Tools({ toolkit: reviewToolkit }) });
+
+export function ReviewRunSummary({ run }: { run: ReviewRunState }) {
+  return (
+    <div
+      role="status"
+      data-review-status={run.status}
+      className="my-3 rounded-md border border-widget p-3 text-sm"
+    >
+      <p>{run.summary}</p>
+      {run.unfinishedItems.length > 0 && (
+        <div className="mt-2">
+          <p className="font-medium">未完成事项</p>
+          <ul className="list-disc pl-5">
+            {run.unfinishedItems.map((item, index) => (
+              <li key={index}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {run.limitations.length > 0 && (
+        <div className="mt-2">
+          <p className="font-medium">审查限制</p>
+          <ul className="list-disc pl-5">
+            {run.limitations.map((item, index) => (
+              <li key={index}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+const ReviewStatusUI = makeAssistantDataUI<ReviewRunState>({
+  name: 'review-status',
+  render: ({ data }) => <ReviewRunSummary run={data} />,
+});
 
 function CodeHeader({ language = '', code }: CodeHeaderProps) {
   const actions = useContext(ChatActionsContext)!;
@@ -124,6 +243,10 @@ const markdownUrlTransform = (url: string) =>
   /^(https?:|mailto:|review-file:)/.test(url) ? url : '';
 
 function ReviewMarkdownText() {
+  const reviewMessage = useAuiState(
+    (state) => state.message.role === 'assistant' && state.message.id.startsWith('review-'),
+  );
+  if (reviewMessage) return null;
   return (
     <MarkdownText
       className="text-[0.95rem] leading-relaxed wrap-anywhere"
@@ -209,6 +332,7 @@ export function AgentChat({
   return (
     <ReviewGitContext.Provider value={{ snapshot, repository }}>
       <ReviewComposerContext.Provider value={composer}>
+        <ReviewStatusUI />
         <Thread components={THREAD_COMPONENTS} autoFocus={false} />
       </ReviewComposerContext.Provider>
     </ReviewGitContext.Provider>

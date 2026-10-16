@@ -1,6 +1,6 @@
 # 仓库审查工具
 
-Extension Host 为共享 AI SDK Agent 注册下列七个只读工具。OpenAI Provider 会将它们放入 `review` namespace；其他 Provider 共用相同定义和执行逻辑。VS Code 的编辑器、文件查找与诊断由 `VSCodeReviewWorkspace` 适配，Git、快照与文件区域引用由 `ReviewContext` 管理。
+Extension Host 为共享 AI SDK Agent 注册下列七个只读工作区工具；审查模式另提供 `submit_review` 和 `finish_review`。OpenAI Provider 会将它们放入 `review` namespace；其他 Provider 共用相同定义和执行逻辑。VS Code 的编辑器、文件查找与诊断由 `VSCodeReviewWorkspace` 适配，Git、快照与文件区域引用由 `ReviewContext` 管理。
 
 | 工具                 | 输入                                                                          | 结果                                                                                         |
 | -------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -13,6 +13,36 @@ Extension Host 为共享 AI SDK Agent 注册下列七个只读工具。OpenAI Pr
 | `get_diagnostics`    | `{ paths }`                                                                   | VS Code 当前诊断的来源、严重级别、代码、消息、位置及截断标记                                 |
 
 所有工具路径均相对当前仓库根目录；上下文中的工作区、活动文件和未保存文件使用绝对路径。行号与列号从 1 开始，列按 VS Code 的 UTF-16 单位计数；选区与诊断的结束位置不包含在范围内，`read_file.endLine` 包含在范围内。多仓库时优先选择活动文件所属的最深层仓库；只有一个仓库时可以直接使用它。没有明确仓库时，上下文返回 `repository: null`，其他工具返回 `repository_unavailable`。
+
+## 增量式审查
+
+在输入框下方选择“代码审查”，请求会明确携带 `mode: "review"`；普通聊天维持原有文本与工具行为，旧客户端省略 mode 时也按聊天处理。两种模式共用现有 `ToolLoopAgent` 多轮循环；审查工具在 Host 执行，前端仅注册渲染器。
+
+每确认一个问题，立即调用：
+
+```json
+{
+  "reviewId": "本轮 list_changes 返回的 UUID",
+  "title": "问题标题",
+  "priority": "P1",
+  "description": "触发条件、实际影响及依据",
+  "referenceIds": ["cite_files 返回的范围引用 ID"]
+}
+```
+
+`submit_review` 接收一条意见，优先级为 P0–P3。Host 校验标题、描述、当前运行的快照及每个已登记的范围引用，拒绝跨快照、跨会话、过期、未知或整文件引用。成功后先写入会话独立的 `ReviewJournal`，再返回 `{ accepted: true, duplicate, finding }`。卡片字段只读取此结果；流式参数和模型普通文本不能生成问题卡片。Host 按规范化标题、描述及排序去重后的仓库/路径/版本/行范围计算身份，同一意见重复或并发提交复用原记录、原工具调用 ID，不新增卡片。
+
+审查结束时单独调用 `finish_review`：
+
+```json
+{ "status": "completed", "unfinishedItems": [], "limitations": [] }
+```
+
+仅接受 `completed` / `incomplete`、未完成事项和审查限制，禁止意见列表及模型声明的数量。`completed` 必须已建立快照、完整读取每个变更文件的连续 diff 分页、没有未修正的工具错误及未完成事项。校验失败作为工具反馈交回模型，允许修正或声明 `incomplete`。成功后直接停止循环，绝不额外调用模型生成总结；模型只输出普通文本而没有成功收尾时，本轮失败，不能据此认定完成。系统最终结合运行成功/取消/失败、收尾结果与账本实际意见数生成状态提示，并补充已知截断、二进制文件等限制。读取了全部 diff 只验证工具覆盖范围，不证明模型发现了所有缺陷。
+
+`data-review-receipt` 为与提交结果相同的 transient 保存回执，前端即时缓存；最终 `data-review-status` 为持久消息部分，由 assistant-ui Data UI 展示。每条意见使用 `display: "standalone"` 的 assistant-ui Tool UI，独立于读取工具的时间线。审查模式不向前端发送模型的普通文本，普通聊天仍保留。
+
+`GET /v1/sessions/:id/reviews` 返回 Host 的运行记录与已保存意见。刷新、停止或断线后按稳定的运行/意见/工具调用 ID 恢复同一 Tool UI；取消或失败不会删除已收录意见，也不依赖成功提交完整模型历史。Markdown 导出使用同一批回执。账本在当前 Host 会话存活期间有效，webview 的回执缓存随原有 getState/setState 保存；Host 重启后缓存仍可读，运行中的旧记录显示中断，需要新会话继续。代码引用沿用下述快照有效期，过期链接需要重新引用。每个会话最多保存 1,000 个运行和 1,000 条不同意见。
 
 ## 审查范围与版本
 
@@ -40,7 +70,7 @@ search_code({ query: "exampleFunction", glob: "**/*.{ts,tsx}", limit: 30 })
 get_diagnostics({ paths: ["src/example.ts"] })
 ```
 
-`get_diff` 每页返回一个文件的部分或完整 patch，保留请求路径顺序。使用相同 `reviewId` 和 `paths` 携带 `nextCursor` 继续读取，直至 `truncated: false`。将同一文件的 `patch` 按页拼接即可恢复完整文本 patch；`patchOffset` 标识字符偏移，超长行的结构化片段带 `partial: true`。新增行的 `oldLine`、删除行的 `newLine` 为 `null`。二进制文件返回 Git 风格的二进制差异提示，不返回可应用的二进制载荷。
+`get_diff` 每页返回一个文件的部分或完整 patch，保留请求路径顺序。使用相同 `reviewId` 和 `paths` 携带 `nextCursor` 继续读取，直至 `truncated: false`。将同一文件的 `patch` 按页拼接即可恢复完整文本 patch；`patchOffset` 标识字符偏移，`patchEnd` 表示本页到达该文件 patch 末尾，超长行的结构化片段带 `partial: true`。新增行的 `oldLine`、删除行的 `newLine` 为 `null`。二进制文件返回 Git 风格的二进制差异提示，不返回可应用的二进制载荷。
 
 `search_code` 和 `get_diagnostics` 查询当前编辑器状态，可能与快照不同；诊断也可能尚未随编辑器更新。搜索优先使用未保存内容，跳过 `.git`、`node_modules`、`dist`、`build`、二进制文件、过大文件和不可访问文件，并返回 `skippedFiles`。
 

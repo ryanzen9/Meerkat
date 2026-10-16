@@ -65,6 +65,8 @@ class TestHost {
   toolRuns = 1;
   /** Tool-call ids stay unique across the runs of one host. */
   toolCallSeq = 0;
+  reviewContext?: ReviewContext;
+  reviewPlan?: (step: number, prompt: string) => TestModelChunk[];
   responseText?: string;
   deleteFailures = 0;
   copiedTexts: string[] = [];
@@ -151,7 +153,9 @@ class TestHost {
               });
             const id = randomUUID();
             const chunks: TestModelChunk[] = [];
-            if (this.includeTool && step <= this.toolRuns) {
+            if (this.reviewPlan) {
+              chunks.push(...this.reviewPlan(step, JSON.stringify(prompt)));
+            } else if (this.includeTool && step <= this.toolRuns) {
               this.toolCallSeq += 1;
               chunks.push(
                 {
@@ -206,6 +210,7 @@ class TestHost {
     const registry = new ProviderRegistry();
     registry.register(() => provider);
     this.runtime = new BridgeRuntime(registry, {}, () => {
+      if (this.reviewContext) return this.reviewContext;
       const context = new ReviewContext({
         getState: async () => ({
           trusted: true,
@@ -612,6 +617,168 @@ async function answered(view: View, count: number) {
     ),
   );
   await waitFor(() => expect(host.runtime.sessions.list().length).toBeLessThanOrEqual(20));
+}
+
+const reviewToolCall = (step: number, toolName: string, input: unknown): TestModelChunk[] => [
+  { type: 'tool-call', toolCallId: `review-call-${step}`, toolName, input: JSON.stringify(input) },
+  finishChunk('tool-calls'),
+];
+
+function incrementalReviewContext(): ReviewContext {
+  const reviewId = randomUUID();
+  const reference = {
+    referenceId: `ref_${'b'.repeat(64)}`,
+    reviewId,
+    repository: '/fixture',
+    path: 'file.ts',
+    version: 'new' as const,
+    scope: 'range' as const,
+    startLine: 2,
+    endLine: 2,
+    label: 'file.ts:2',
+    markdown: `[file.ts:2](review-file:ref_${'b'.repeat(64)})`,
+  };
+  const context = new ReviewContext({
+    getState: async () => ({
+      trusted: true,
+      workspaceFolders: [],
+      repositories: [],
+      activeFile: null,
+      dirtyDocuments: [],
+    }),
+    findFiles: async () => [],
+    getDiagnostics: () => [],
+  });
+  const change = {
+    path: 'file.ts',
+    oldPath: 'file.ts',
+    newPath: 'file.ts',
+    status: 'modified' as const,
+  };
+  context.listChanges = async ({ scope }) => ({
+    reviewId,
+    scope,
+    repository: '/fixture',
+    head: 'head',
+    base: 'base',
+    changes: [change],
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 900000).toISOString(),
+  });
+  context.getDiff = async () => ({
+    reviewId,
+    files: [
+      {
+        ...change,
+        binary: false,
+        patch: '@@ -2 +2 @@\n-old\n+unchecked\n',
+        patchOffset: 0,
+        patchComplete: true,
+        patchEnd: true,
+        hunks: [],
+      },
+    ],
+    truncated: false,
+    nextCursor: null,
+  });
+  context.citeFiles = async () => ({ references: [reference] });
+  context.getFileReference = async (id) => {
+    if (id !== reference.referenceId)
+      throw new BridgeError('reference_not_found', 'Unknown reference');
+    return reference;
+  };
+  return context;
+}
+for (const outcome of ['completed', 'cancelled'] as const) {
+  test(`incremental Tool UI saves one card while running, then restores ${outcome} receipts`, async () => {
+    host.reviewContext = incrementalReviewContext();
+    let calls = 0;
+    host.reviewPlan = (step, prompt) => {
+      calls++;
+      const reviewId = /"reviewId":"([\w-]+)"/.exec(prompt)?.[1] ?? '';
+      const referenceId = /ref_[a-f0-9]{64}/.exec(prompt)?.[0] ?? '';
+      if (step === 1) return reviewToolCall(step, 'list_changes', { scope: 'all' });
+      if (step === 2) return reviewToolCall(step, 'get_diff', { reviewId, paths: ['file.ts'] });
+      if (step === 3)
+        return reviewToolCall(step, 'cite_files', {
+          reviewId,
+          references: [{ path: 'file.ts', version: 'new', startLine: 2, endLine: 2 }],
+        });
+      if (step === 4 || step === 5)
+        return reviewToolCall(step, 'submit_review', {
+          reviewId,
+          title: 'Unchecked value',
+          priority: 'P1',
+          description: 'The inserted value reaches the caller without validation.',
+          referenceIds: [referenceId],
+        });
+      if (step === 6) {
+        host.holdStream = true;
+        return [
+          { type: 'reasoning-start', id: 'waiting' },
+          { type: 'reasoning-delta', id: 'waiting', delta: 'Continuing review' },
+        ];
+      }
+      throw new Error('No model summary request is allowed');
+    };
+    const view = mount();
+    await connected(view);
+    fireEvent.change(view.getByRole('combobox', { name: '交互模式' }), {
+      target: { value: 'review' },
+    });
+    fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
+      target: { value: 'Review changes incrementally' },
+    });
+    await waitFor(() =>
+      expect((view.getByRole('button', { name: '发送消息' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    fireEvent.click(view.getByRole('button', { name: '发送消息' }));
+    await waitFor(() => expect(calls).toBe(6));
+    await waitFor(() =>
+      expect(view.getByRole('article', { name: 'P1 Unchecked value' })).toBeDefined(),
+    );
+    expect(view.container.querySelectorAll('[data-review-finding]')).toHaveLength(1);
+    expect(view.getByRole('article').closest('[data-slot="tool-timeline"]')).toBeNull();
+    await waitFor(() =>
+      expect(restoreReviewState(host.savedState).sessions[0]!.reviews?.findings).toHaveLength(1),
+    );
+    expect(view.queryByText('审查已完成，已收录 1 条问题。')).toBeNull();
+    fireEvent.click(view.getByRole('button', { name: 'file.ts:2' }));
+    await waitFor(() => expect(host.openedReferences).toHaveLength(1));
+    if (outcome === 'completed') {
+      await act(async () => {
+        host.holdStream = false;
+        host.streamOutput!.enqueue({ type: 'reasoning-end', id: 'waiting' });
+        for (const chunk of reviewToolCall(6, 'finish_review', {
+          status: 'completed',
+          unfinishedItems: [],
+          limitations: [],
+        }))
+          host.streamOutput!.enqueue(chunk);
+        host.streamOutput!.close();
+        await host.settle();
+      });
+    } else {
+      fireEvent.click(view.getByRole('button', { name: '取消运行' }));
+    }
+    const summary =
+      outcome === 'completed' ? '审查已完成，已收录 1 条问题。' : '审查已取消，已收录 1 条问题。';
+    await waitFor(() => expect(view.getByText(summary)).toBeDefined());
+    expect(calls).toBe(6);
+    view.unmount();
+    // Simulate a refresh between the Host commit and local receipt persistence.
+    const saved = restoreReviewState(host.savedState);
+    delete saved.sessions[0]!.reviews;
+    host.savedState = saved;
+    const restored = mount();
+    await connected(restored);
+    await waitFor(() => expect(restored.getByText(summary)).toBeDefined());
+    expect(restored.container.querySelectorAll('[data-review-finding]')).toHaveLength(1);
+    expect(restored.getByRole('article', { name: 'P1 Unchecked value' })).toBeDefined();
+    expect(calls).toBe(6);
+  });
 }
 
 test('assistant-ui Thread keeps Bridge tool output and copies the full assistant response through Host', async () => {

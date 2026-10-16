@@ -1,14 +1,16 @@
 import { tool } from 'ai';
 import { z } from 'zod';
 import { BridgeError, publicError } from '../errors';
-import type { ReviewToolContext } from './reviewWorkspace';
+import type { ReviewSubmissionContext, ReviewToolContext } from './reviewWorkspace';
+import { finishReviewSchema, submitReviewSchema } from '../../../shared/review';
 
 const path = z.string().min(1).max(4096);
 const paths = z.array(path).min(1).max(100);
 const reviewId = z.string().uuid();
 
-export function reviewTools(context?: ReviewToolContext) {
+export function reviewTools(context?: ReviewToolContext, run?: ReviewSubmissionContext) {
   async function execute<T>(
+    name: string,
     signal: AbortSignal | undefined,
     action: (service: ReviewToolContext) => Promise<T>,
   ) {
@@ -19,7 +21,7 @@ export function reviewTools(context?: ReviewToolContext) {
           'review_unavailable',
           'Review workspace is unavailable in this host.',
         );
-      const result = await action(context);
+      const result = await (run ? run.track(name, () => action(context)) : action(context));
       signal?.throwIfAborted();
       return result;
     } catch (error) {
@@ -29,12 +31,52 @@ export function reviewTools(context?: ReviewToolContext) {
     }
   }
   return {
+    submit_review: tool({
+      description:
+        'Immediately save ONE verified finding, with title, priority P0–P3, description and referenceIds returned by cite_files (range scope) for this run snapshot. The accepted tool receipt is the only review report. Do not wait to collect a list. Retry corrected arguments after validation errors. Duplicate findings are saved once.',
+      inputSchema: submitReviewSchema,
+      execute: async (input, { abortSignal, toolCallId }) => {
+        try {
+          if (!run)
+            throw new BridgeError(
+              'review_unavailable',
+              'submit_review is available only in review mode.',
+            );
+          return await run.submit(input, toolCallId, abortSignal);
+        } catch (error) {
+          if (abortSignal?.aborted) throw abortSignal.reason;
+          const safe = publicError(error);
+          return { error: { code: safe.code, message: safe.message } };
+        }
+      },
+    }),
+    finish_review: tool({
+      description:
+        'Finish this review after all other tools have returned. Call alone. Submit ONLY status (completed/incomplete), unfinishedItems and limitations, never findings or counts. completed requires a snapshot, every diff page read, no unresolved tool errors or unfinished items. Accepted completion stops the loop without a model summary. On validation failure, fix the problem and retry, or finish as incomplete.',
+      inputSchema: finishReviewSchema,
+      execute: async (input, { abortSignal }) => {
+        try {
+          if (!run)
+            throw new BridgeError(
+              'review_unavailable',
+              'finish_review is available only in review mode.',
+            );
+          return run.finish(input, abortSignal);
+        } catch (error) {
+          if (abortSignal?.aborted) throw abortSignal.reason;
+          const safe = publicError(error);
+          return { error: { code: safe.code, message: safe.message } };
+        }
+      },
+    }),
     get_review_context: tool({
       description:
         'Get the current repository, branch, HEAD, active file, selection, unsaved files and project configuration entry points. Call first to identify the review project. Coordinates are 1-based.',
       inputSchema: z.object({}),
       execute: (_input, { abortSignal }) =>
-        execute(abortSignal, (service) => service.getReviewContext(abortSignal)),
+        execute('get_review_context', abortSignal, (service) =>
+          service.getReviewContext(abortSignal),
+        ),
     }),
     list_changes: tool({
       description:
@@ -44,14 +86,14 @@ export function reviewTools(context?: ReviewToolContext) {
         baseRef: z.string().min(1).max(256).optional(),
       }),
       execute: (input, { abortSignal }) =>
-        execute(abortSignal, (service) => service.listChanges(input, abortSignal)),
+        execute('list_changes', abortSignal, (service) => service.listChanges(input, abortSignal)),
     }),
     get_diff: tool({
       description:
         'Read a real Git unified patch and structured hunks with old/new line numbers from a review snapshot. Follow nextCursor using the same reviewId and paths until truncated is false. Pages may contain part of a patch; concatenate patch fragments in order.',
       inputSchema: z.object({ reviewId, paths, cursor: z.string().max(4096).optional() }),
       execute: (input, { abortSignal }) =>
-        execute(abortSignal, (service) => service.getDiff(input, abortSignal)),
+        execute('get_diff', abortSignal, (service) => service.getDiff(input, abortSignal)),
     }),
     read_file: tool({
       description:
@@ -64,7 +106,7 @@ export function reviewTools(context?: ReviewToolContext) {
         endLine: z.number().int().min(1),
       }),
       execute: (input, { abortSignal }) =>
-        execute(abortSignal, (service) => service.readFile(input, abortSignal)),
+        execute('read_file', abortSignal, (service) => service.readFile(input, abortSignal)),
     }),
     cite_files: tool({
       description:
@@ -90,7 +132,7 @@ export function reviewTools(context?: ReviewToolContext) {
           .max(20),
       }),
       execute: (input, { abortSignal }) =>
-        execute(abortSignal, (service) => service.citeFiles(input, abortSignal)),
+        execute('cite_files', abortSignal, (service) => service.citeFiles(input, abortSignal)),
     }),
     search_code: tool({
       description:
@@ -105,14 +147,16 @@ export function reviewTools(context?: ReviewToolContext) {
         limit: z.number().int().min(1).max(100).optional(),
       }),
       execute: (input, { abortSignal }) =>
-        execute(abortSignal, (service) => service.searchCode(input, abortSignal)),
+        execute('search_code', abortSignal, (service) => service.searchCode(input, abortSignal)),
     }),
     get_diagnostics: tool({
       description:
         'Get current VS Code diagnostics for repository-relative paths, including source, severity, code and 1-based locations. Diagnostic range ends are exclusive. Results are live and may lag editor changes; they are supporting evidence rather than a completed build.',
       inputSchema: z.object({ paths }),
       execute: (input, { abortSignal }) =>
-        execute(abortSignal, (service) => service.getDiagnostics(input, abortSignal)),
+        execute('get_diagnostics', abortSignal, (service) =>
+          service.getDiagnostics(input, abortSignal),
+        ),
     }),
   };
 }

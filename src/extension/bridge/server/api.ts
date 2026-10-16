@@ -12,11 +12,13 @@ const textSchema = z
   .object({
     text: z.string().trim().min(1).max(100000),
     reasoningEffort: z.enum(reasoningEfforts).optional(),
+    mode: z.enum(['chat', 'review']).optional(),
   })
   .strict();
 const chatSchema = z
   .object({
     sessionId: idSchema,
+    mode: z.enum(['chat', 'review']).optional(),
     reasoningEffort: z.enum(reasoningEfforts).optional(),
     messages: z
       .array(
@@ -108,18 +110,20 @@ export function createBridgeApi(options: BridgeApiOptions) {
           });
         }
       }
-      const sessionMatch = path.match(/^\/v1\/sessions\/([\w-]+)(\/messages)?$/);
+      const sessionMatch = path.match(/^\/v1\/sessions\/([\w-]+)(\/messages|\/reviews)?$/);
       if (sessionMatch) {
         const id = sessionMatch[1]!;
+        if (sessionMatch[2] === '/reviews' && method === 'GET')
+          return Response.json(runtime.sessions.get(id).reviews.snapshot());
         if (!sessionMatch[2] && method === 'GET')
           return Response.json(sessionInfo(runtime.sessions.get(id)));
         if (!sessionMatch[2] && method === 'DELETE') {
           await runtime.deleteSession(id);
           return new Response(null, { status: 204 });
         }
-        if (sessionMatch[2] && method === 'POST') {
-          const { text, reasoningEffort } = await body(request, textSchema);
-          const run = runtime.start(id, text, request.signal, reasoningEffort);
+        if (sessionMatch[2] === '/messages' && method === 'POST') {
+          const { text, reasoningEffort, mode } = await body(request, textSchema);
+          const run = runtime.start(id, text, request.signal, reasoningEffort, mode);
           return createUIMessageStreamResponse({
             stream: run.stream,
             headers: { 'x-bridge-run-id': run.runId },
@@ -147,7 +151,13 @@ export function createBridgeApi(options: BridgeApiOptions) {
         const text = turn.data.text;
         // Existing history and tool calls belong to the provider session. Do not
         // resend the client transcript or execute client-supplied tools/instructions.
-        const run = runtime.start(data.sessionId, text, request.signal, data.reasoningEffort);
+        const run = runtime.start(
+          data.sessionId,
+          text,
+          request.signal,
+          data.reasoningEffort,
+          data.mode,
+        );
         return createUIMessageStreamResponse({
           stream: run.stream,
           headers: { 'x-bridge-run-id': run.runId },

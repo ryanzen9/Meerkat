@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { BridgeError } from '../errors';
 import { SessionHistory } from './history';
+import { ReviewJournal } from './reviews';
 import type { ProviderSession } from '../providers/types';
 
 export interface BridgeSession {
@@ -9,6 +10,7 @@ export interface BridgeSession {
   createdAt: string;
   provider: ProviderSession;
   history: SessionHistory;
+  reviews: ReviewJournal;
 }
 export function sessionInfo(session: BridgeSession) {
   return {
@@ -29,6 +31,7 @@ export class SessionStore {
       providerId,
       provider,
       history: new SessionHistory(),
+      reviews: new ReviewJournal(),
       createdAt: new Date().toISOString(),
     };
     this.sessions.set(session.id, session);

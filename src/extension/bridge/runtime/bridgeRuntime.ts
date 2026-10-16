@@ -7,8 +7,9 @@ import type { ReasoningEffort } from '../../../shared/agentModels';
 import { streamReviewAgent, type ReviewAgentOptions } from './reviewAgent';
 import type { ReviewContext } from '../tools/reviewContext';
 import { AGENT_IDLE_TIMEOUT_MS, createIdleTimer } from '../../../shared/bridgeTiming';
+import type { InteractionMode } from '../../../shared/review';
 
-export type RunStatus = 'running' | 'completed' | 'cancelled' | 'failed';
+export type RunStatus = 'running' | 'completed' | 'incomplete' | 'cancelled' | 'failed';
 interface Run {
   id: string;
   sessionId: string;
@@ -35,6 +36,7 @@ export class BridgeRuntime {
     text: string,
     signal: AbortSignal,
     reasoningEffort?: ReasoningEffort,
+    mode: InteractionMode = 'chat',
   ): { runId: string; stream: ReadableStream<UIMessageChunk> } {
     if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
     const session = this.sessions.get(sessionId);
@@ -43,6 +45,9 @@ export class BridgeRuntime {
     const reviewContext = this.reviewContexts.get(sessionId);
     if ([...this.runs.values()].some((r) => r.sessionId === sessionId && !r.settled))
       throw new BridgeError('session_busy', 'A run is already active in this session.', 409);
+    const runId = randomUUID();
+    const reviewRun =
+      mode === 'review' ? session.reviews.start(runId, sessionId, text, reviewContext) : undefined;
     const controller = new AbortController();
     const combined = AbortSignal.any([signal, controller.signal]);
     const idle = createIdleTimer(
@@ -61,7 +66,7 @@ export class BridgeRuntime {
       finish = resolve;
     });
     const run: Run = {
-      id: randomUUID(),
+      id: runId,
       sessionId,
       providerId: session.providerId,
       status: 'running',
@@ -77,7 +82,13 @@ export class BridgeRuntime {
     }
     this.runs.set(run.id, run);
     const provider = this.registry.get(session.providerId);
-    const agentOptions = this.options;
+    const agentOptions = { ...this.options, reviewRun };
+    const reviewState = (
+      status: 'completed' | 'cancelled' | 'failed',
+    ): UIMessageChunk | undefined =>
+      reviewRun
+        ? { type: 'data-review-status', id: run.id, data: reviewRun.settle(status) }
+        : undefined;
     const state = (): UIMessageChunk => ({
       type: 'data-run-state',
       data: {
@@ -91,6 +102,7 @@ export class BridgeRuntime {
     let opening: Promise<ReadableStreamDefaultReader<UIMessageChunk>> | undefined;
     let terminal = false;
     let first = true;
+    let finishChunk: UIMessageChunk | undefined;
     let abortOutput: (() => void) | undefined;
     const cleanup = () => {
       idle.dispose();
@@ -121,6 +133,8 @@ export class BridgeRuntime {
             combined.reason instanceof BridgeError
               ? combined.reason
               : new BridgeError('run_cancelled', 'Run cancelled.', 408);
+          const review = reviewState('cancelled');
+          if (review) output.enqueue(review);
           output.enqueue({
             type: 'error',
             errorText: `${failure.code}: ${failure.message}`,
@@ -129,6 +143,14 @@ export class BridgeRuntime {
           output.close();
         };
         combined.addEventListener('abort', aborted, { once: true });
+        if (reviewRun) output.enqueue({ type: 'start', messageId: `review-${run.id}` });
+        if (reviewRun)
+          output.enqueue({
+            type: 'data-review-status',
+            id: run.id,
+            data: structuredClone(reviewRun.state),
+            transient: true,
+          });
         if (combined.aborted) aborted();
       },
       async pull(output) {
@@ -150,14 +172,34 @@ export class BridgeRuntime {
             agentOptions,
           ).then((source) => source.getReader());
           reader ??= await opening;
-          const next = await reader.read();
+          let next = await reader.read();
+          if (reviewRun) {
+            while (!next.done && (next.value.type === 'start' || next.value.type === 'finish')) {
+              if (next.value.type === 'finish') finishChunk = next.value;
+              idle.reset();
+              next = await reader.read();
+            }
+          }
           if (terminal) return;
           if (!next.done) {
             idle.reset();
             output.enqueue(next.value);
+            if (reviewRun && next.value.type === 'tool-output-available') {
+              const receipt = next.value.output as { accepted?: boolean; finding?: unknown };
+              if (receipt?.accepted && receipt.finding)
+                output.enqueue({
+                  type: 'data-review-receipt',
+                  data: { run: structuredClone(reviewRun.state), result: receipt },
+                  transient: true,
+                });
+            }
             return;
           }
           run.status = 'completed';
+          const review = reviewState('completed');
+          if (reviewRun?.state.status === 'incomplete') run.status = 'incomplete';
+          if (review) output.enqueue(review);
+          if (finishChunk) output.enqueue(finishChunk);
           output.enqueue(state());
           output.close();
           cleanup();
@@ -170,6 +212,8 @@ export class BridgeRuntime {
             : publicError(error);
           run.status =
             combined.aborted || failure.code === 'tool_idle_timeout' ? 'cancelled' : 'failed';
+          const review = reviewState(run.status);
+          if (review) output.enqueue(review);
           output.enqueue({ type: 'error', errorText: `${failure.code}: ${failure.message}` });
           output.enqueue(state());
           output.close();
@@ -178,6 +222,7 @@ export class BridgeRuntime {
       },
       async cancel() {
         if (!terminal) {
+          reviewRun?.settle('cancelled');
           abortOutput = undefined;
           controller.abort();
           await run.ended;

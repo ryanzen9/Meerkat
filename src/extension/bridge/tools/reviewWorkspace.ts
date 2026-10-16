@@ -127,6 +127,7 @@ export interface ReviewToolContext {
       patch: string;
       patchOffset: number;
       patchComplete: boolean;
+      patchEnd: boolean;
       hunks: DiffHunk[];
     })[];
     truncated: boolean;
@@ -180,4 +181,17 @@ export interface ReviewToolContext {
     diagnostics: ReviewDiagnostic[];
     truncated: boolean;
   }>;
+}
+
+export interface ReviewSubmissionContext {
+  track<T>(name: string, action: () => Promise<T>): Promise<T>;
+  submit(
+    input: import('../../../shared/review').SubmitReviewInput,
+    toolCallId: string,
+    signal?: AbortSignal,
+  ): Promise<import('../../../shared/review').SubmitReviewResult>;
+  finish(
+    input: import('../../../shared/review').FinishReviewInput,
+    signal?: AbortSignal,
+  ): { accepted: true; status: 'completed' | 'incomplete' };
 }

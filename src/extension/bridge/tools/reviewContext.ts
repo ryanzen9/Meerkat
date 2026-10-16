@@ -256,6 +256,7 @@ export class ReviewContext implements ReviewToolContext {
           patch: patch.slice(offset, end),
           patchOffset: offset,
           patchComplete: offset === 0 && complete,
+          patchEnd: complete,
           hunks: pageHunks(patch, offset, end),
         },
       ],

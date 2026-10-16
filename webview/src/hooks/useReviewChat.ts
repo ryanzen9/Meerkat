@@ -9,6 +9,13 @@ import { restoreReviewState, sessionMarkdown, startNewReviewSession } from '../s
 import { bridgeFetch } from '../services/bridgeFetch';
 import { bridgeJson, BridgeResponseError } from '../services/bridgeApi';
 import type { AgentModel, ReasoningEffort } from '@shared/agentModels';
+import type { InteractionMode, ReviewSnapshotState } from '@shared/review';
+import { reviewReceiptSchema, reviewRunStateSchema, reviewSnapshotSchema } from '@shared/review';
+import {
+  interruptExpiredReviews,
+  mergeReviewReceipt,
+  restoreReviewMessages,
+} from '../state/reviewReceipts';
 
 const convertMessage = (message: ChatMessage): ReviewChatMessage => ({
   id: message.id,
@@ -64,6 +71,7 @@ export function useReviewChat(connection: {
   const modelAvailable = connection.models.some((item) => item.id === model);
   const selectedModel = connection.models.find((item) => item.id === model);
   const reasoningEffort = session.reasoningEffort ?? selectedModel?.defaultReasoningEffort;
+  const mode = session.mode ?? 'chat';
   const effortAvailable =
     reasoningEffort === undefined ||
     selectedModel?.supportedReasoningEfforts.some(
@@ -194,6 +202,7 @@ export function useReviewChat(connection: {
           return {
             body: {
               sessionId,
+              mode,
               messages: messages.slice(-1),
               ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
             },
@@ -211,13 +220,89 @@ export function useReviewChat(connection: {
       session.bridgeSessionId,
       bindingError,
       reasoningEffort,
+      mode,
     ],
   );
   const chat = useChat<ReviewChatMessage>({
     id: session.id,
-    messages: session.messages.map(convertMessage),
+    messages: restoreReviewMessages(session.messages.map(convertMessage), session.reviews),
     transport,
+    onData: (part) => {
+      if (part.type !== 'data-review-status' && part.type !== 'data-review-receipt') return;
+      const status =
+        part.type === 'data-review-status' ? reviewRunStateSchema.safeParse(part.data) : undefined;
+      const receipt =
+        part.type === 'data-review-receipt' ? reviewReceiptSchema.safeParse(part.data) : undefined;
+      const run = status?.success ? status.data : receipt?.success ? receipt.data.run : undefined;
+      if (!run) return;
+      const result = receipt?.success ? receipt.data.result : undefined;
+      setState((current) => ({
+        ...current,
+        sessions: current.sessions.map((item) =>
+          item.bridgeSessionId !== run.sessionId
+            ? item
+            : {
+                ...item,
+                reviews: mergeReviewReceipt(item.reviews, run, result),
+              },
+        ),
+      }));
+    },
   });
+  const setMessages = chat.setMessages;
+  useEffect(() => {
+    if (!session.bridgeSessionId || chat.status === 'submitted' || chat.status === 'streaming')
+      return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const recover = async () => {
+      try {
+        const reviews: ReviewSnapshotState = reviewSnapshotSchema.parse(
+          await bridgeJson<unknown>(
+            `/v1/sessions/${session.bridgeSessionId}/reviews`,
+            'GET',
+            undefined,
+            controller.signal,
+          ),
+        );
+        if (controller.signal.aborted) return;
+        setState((current) => ({
+          ...current,
+          sessions: current.sessions.map((item) =>
+            item.id === session.id ? { ...item, reviews } : item,
+          ),
+        }));
+        setMessages((messages) => restoreReviewMessages(messages, reviews));
+        if (reviews.runs.some((run) => run.status === 'running'))
+          timer = setTimeout(() => {
+            void recover();
+          }, 1000);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        // Local receipts remain readable after the Host session expires.
+        if (error instanceof BridgeResponseError && error.status === 404) {
+          const reviews = interruptExpiredReviews(session.reviews);
+          if (reviews) {
+            setState((current) => ({
+              ...current,
+              sessions: current.sessions.map((item) =>
+                item.id === session.id ? { ...item, reviews } : item,
+              ),
+            }));
+            setMessages((messages) => restoreReviewMessages(messages, reviews));
+          }
+        } else
+          timer = setTimeout(() => {
+            void recover();
+          }, 2000);
+      }
+    };
+    void recover();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [session.id, session.bridgeSessionId, chat.status, setMessages]);
   // The Bridge accepts text turns; do not offer the SDK's default file uploads.
   const runtime = useAISDKRuntime(chat, {
     isSendDisabled: !connection.modelsReady,
@@ -240,6 +325,9 @@ export function useReviewChat(connection: {
         .join('\n')
         .slice(0, 4000),
       createdAt: now,
+      ...(message.id.startsWith('review-') && message.role === 'assistant'
+        ? { reviewRunId: message.id.slice('review-'.length) }
+        : {}),
     }));
     setState((current) => ({
       ...current,
@@ -291,6 +379,14 @@ export function useReviewChat(connection: {
       ),
     }));
   }, []);
+  const setMode = useCallback((nextMode: InteractionMode) => {
+    setState((current) => ({
+      ...current,
+      sessions: current.sessions.map((item) =>
+        item.id === current.activeSessionId ? { ...item, mode: nextMode } : item,
+      ),
+    }));
+  }, []);
   const setTab = useCallback(
     (activeTab: ReviewTab) => setState((current) => ({ ...current, activeTab })),
     [],
@@ -320,6 +416,8 @@ export function useReviewChat(connection: {
     model,
     modelAvailable,
     reasoningEffort,
+    mode,
+    setMode,
     setReasoningEffort,
     error: bindingError || chat.error?.message || cleanupError,
     isRunning: chat.status === 'submitted' || chat.status === 'streaming',

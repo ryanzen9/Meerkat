@@ -1,5 +1,6 @@
 // JSON-only data: no VS Code, Node, Bun, or React imports in this layer.
 import type { ReasoningEffort } from './agentModels';
+import type { InteractionMode, ReviewSnapshotState } from './review';
 export interface WorkspaceFolderInfo {
   name: string;
   uri: string;
@@ -76,6 +77,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   text: string;
   createdAt: string;
+  reviewRunId?: string;
 }
 
 export interface ChatSession {
@@ -89,4 +91,6 @@ export interface ChatSession {
   model?: string;
   accountId?: string;
   reasoningEffort?: ReasoningEffort;
+  mode?: InteractionMode;
+  reviews?: ReviewSnapshotState;
 }

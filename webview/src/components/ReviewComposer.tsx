@@ -6,6 +6,7 @@ import { OpenAILogo } from './assistant-ui/elements/logos';
 import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
 
 import { isReasoningEffort, type AgentModel, type ReasoningEffort } from '@shared/agentModels';
+import type { InteractionMode } from '@shared/review';
 
 export interface ReviewComposerState {
   sessionId: string;
@@ -20,6 +21,8 @@ export interface ReviewComposerState {
   model: string;
   modelDisabled: boolean;
   onModelChange(model: string): void;
+  mode: InteractionMode;
+  onModeChange(mode: InteractionMode): void;
 }
 
 export const ReviewComposerContext = createContext<ReviewComposerState | null>(null);
@@ -131,12 +134,23 @@ export function ReviewComposerInput({ autoFocus }: { autoFocus: boolean }) {
 }
 
 export function ReviewComposerFooter() {
-  const { onNew, modelsLoading } = useContext(ReviewComposerContext)!;
+  const { onNew, modelsLoading, mode, onModeChange } = useContext(ReviewComposerContext)!;
   const text = useAuiState((state) => state.composer.text);
+  const isRunning = useAuiState((state) => state.thread.isRunning);
   return (
     <div className="mt-1 flex min-w-0 flex-col gap-0.5 text-[0.7rem] text-muted">
       <GitStatusLine />
       <div className="flex min-w-0 items-center justify-between gap-2">
+        <select
+          aria-label="交互模式"
+          value={mode}
+          disabled={isRunning}
+          onChange={(event) => onModeChange(event.target.value === 'review' ? 'review' : 'chat')}
+          className="rounded-sm bg-input text-input-foreground"
+        >
+          <option value="review">代码审查</option>
+          <option value="chat">普通聊天</option>
+        </select>
         <span id="composer-hint" className="truncate" aria-live="polite">
           {modelsLoading
             ? '正在加载模型…'

@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatSession, ReviewTab, WebviewState } from '@shared/models';
 import { isRecord } from '@shared/protocol';
 import { isReasoningEffort } from '@shared/agentModels';
+import { reviewSnapshotSchema } from '@shared/review';
 
 export interface ReviewState {
   activeTab: ReviewTab;
@@ -19,6 +20,7 @@ export function createSession(): ChatSession {
     updatedAt: now,
     draft: '',
     messages: [],
+    mode: 'chat',
   };
 }
 
@@ -68,6 +70,10 @@ export function restoreReviewState(saved: unknown): ReviewState {
       messages: session.messages.slice(-100),
     };
     if (!isReasoningEffort(restored.reasoningEffort)) delete restored.reasoningEffort;
+    if (restored.mode !== 'chat' && restored.mode !== 'review') restored.mode = 'chat';
+    const reviews = reviewSnapshotSchema.safeParse(restored.reviews);
+    if (reviews.success) restored.reviews = reviews.data;
+    else delete restored.reviews;
     return restored;
   });
   if (!sessions.length) sessions.push(createSession());
@@ -154,5 +160,13 @@ export function appendTurn(state: ReviewState, text: string, reply: string): Rev
 }
 
 export function sessionMarkdown(session: ChatSession): string {
-  return `# ${session.title}\n\n${session.messages.map(({ role, text }) => `## ${role === 'user' ? 'You' : 'Review'}\n\n${text}`).join('\n\n')}`;
+  return `# ${session.title}\n\n${session.messages
+    .map(({ role, text, reviewRunId }) => {
+      if (!reviewRunId) return `## ${role === 'user' ? 'You' : 'Review'}\n\n${text}`;
+      const run = session.reviews?.runs.find(({ id }) => id === reviewRunId);
+      const findings =
+        session.reviews?.findings.filter((finding) => finding.runId === reviewRunId) ?? [];
+      return `## Review\n\n${findings.map((finding) => `### [${finding.priority}] ${finding.title}\n\n${finding.description}\n\n${finding.references.map((ref) => ref.markdown).join(' · ')}`).join('\n\n')}\n\n${run?.summary ?? '审查未完成。'}${run?.unfinishedItems.length ? `\n\n未完成事项：\n${run.unfinishedItems.join('\n')}` : ''}${run?.limitations.length ? `\n\n审查限制：\n${run.limitations.join('\n')}` : ''}`;
+    })
+    .join('\n\n')}`;
 }

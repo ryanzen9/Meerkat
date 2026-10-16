@@ -1,6 +1,6 @@
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { changeCounts } from '@shared/git';
-import { AgentChat, ChatActionsContext } from './components/AgentChat';
+import { AgentChat, ChatActionsContext, reviewToolConfig } from './components/AgentChat';
 import { FileChanges } from './components/FileChanges';
 import { ReviewContext } from './components/ReviewContext';
 import { ReviewHeader } from './components/ReviewHeader';
@@ -18,7 +18,7 @@ export function App() {
   const repository =
     repositories.find(({ rootUri }) => rootUri === chat.repositoryUri) ?? repositories[0];
   return (
-    <AssistantRuntimeProvider runtime={chat.runtime}>
+    <AssistantRuntimeProvider runtime={chat.runtime} config={reviewToolConfig}>
       <ChatActionsContext.Provider
         value={{
           openFile: panel.openFile,
@@ -162,6 +162,8 @@ export function App() {
                 reasoningEffort={chat.reasoningEffort}
                 onReasoningEffortChange={chat.setReasoningEffort}
                 model={chat.model}
+                mode={chat.mode}
+                onModeChange={chat.setMode}
                 modelDisabled={
                   !connection.authenticated || !connection.modelsReady || chat.isRunning
                 }

@@ -68,21 +68,22 @@ curl -N -D /tmp/meerkat-stream-headers "$BRIDGE_URL/v1/sessions/$BRIDGE_SESSION/
 
 除了 OAuth 浏览器回调，所有 HTTP 接口都需要 `Authorization: Bearer <本次进程的随机访问凭据>`。JSON 请求使用 `Content-Type: application/json`。
 
-| 方法         | 路径                        | 输入 / 输出                                                                          |
-| ------------ | --------------------------- | ------------------------------------------------------------------------------------ |
-| GET          | `/v1/providers`             | Provider 描述与能力                                                                  |
-| GET          | `/v1/providers/:id/auth`    | 登录状态、账户标识、授权 pending 与可选的安全 `signInError`；无令牌                  |
-| POST         | `/v1/providers/:id/login`   | `{}` 新注册，或 `{accountId}` 复用保存的注册；Host 打开浏览器                        |
-| GET          | `/auth/callback`            | 官方 OAuth query；验证 state 后交换 code，仅返回固定文本                             |
-| POST         | `/v1/providers/:id/logout`  | 清除本机凭据并返回 `remoteRevocationConfirmed`                                       |
-| GET          | `/v1/providers/:id/models`  | 实时、账户隔离的 `{id,name,supportedReasoningEfforts,defaultReasoningEffort?}[]`     |
-| POST         | `/v1/sessions`              | `{providerId,model}` → `201` 会话元数据                                              |
-| GET          | `/v1/sessions`              | 当前 Host 会话列表                                                                   |
-| GET / DELETE | `/v1/sessions/:id`          | 元数据 / 取消关联运行并删除会话                                                      |
-| POST         | `/v1/sessions/:id/messages` | `{text,reasoningEffort?}` → AI SDK UI Message SSE                                    |
-| POST         | `/v1/chat`                  | `{sessionId,messages:UIMessage[],reasoningEffort?}` → SSE，仅取最后的 text 用户 turn |
-| GET          | `/v1/runs/:id`              | `running / completed / cancelled / failed`                                           |
-| POST         | `/v1/runs/:id/cancel`       | 将 AbortSignal 传至 SDK 与本地工具                                                   |
+| 方法         | 路径                        | 输入 / 输出                                                                                                 |
+| ------------ | --------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| GET          | `/v1/providers`             | Provider 描述与能力                                                                                         |
+| GET          | `/v1/providers/:id/auth`    | 登录状态、账户标识、授权 pending 与可选的安全 `signInError`；无令牌                                         |
+| POST         | `/v1/providers/:id/login`   | `{}` 新注册，或 `{accountId}` 复用保存的注册；Host 打开浏览器                                               |
+| GET          | `/auth/callback`            | 官方 OAuth query；验证 state 后交换 code，仅返回固定文本                                                    |
+| POST         | `/v1/providers/:id/logout`  | 清除本机凭据并返回 `remoteRevocationConfirmed`                                                              |
+| GET          | `/v1/providers/:id/models`  | 实时、账户隔离的 `{id,name,supportedReasoningEfforts,defaultReasoningEffort?}[]`                            |
+| POST         | `/v1/sessions`              | `{providerId,model}` → `201` 会话元数据                                                                     |
+| GET          | `/v1/sessions`              | 当前 Host 会话列表                                                                                          |
+| GET / DELETE | `/v1/sessions/:id`          | 元数据 / 取消关联运行并删除会话                                                                             |
+| GET          | `/v1/sessions/:id/reviews`  | 当前会话审查运行记录及已保存意见，用于刷新恢复                                                              |
+| POST         | `/v1/sessions/:id/messages` | `{text,reasoningEffort?,mode?:"chat"\|"review"}` → AI SDK UI Message SSE                                    |
+| POST         | `/v1/chat`                  | `{sessionId,messages:UIMessage[],reasoningEffort?,mode?:"chat"\|"review"}` → SSE，仅取最后的 text 用户 turn |
+| GET          | `/v1/runs/:id`              | `running / completed / incomplete / cancelled / failed`                                                     |
+| POST         | `/v1/runs/:id/cancel`       | 将 AbortSignal 传至 SDK 与本地工具                                                                          |
 
 普通错误使用 `{error:{code,message}}` 和对应 HTTP 状态码。流开始后的错误转换为 AI SDK 的 `error` chunk；`data-run-state` 是 transient data part，携带 session/run 标识与状态。SSE 封装和 `[DONE]` 来自 AI SDK，Agent 文本、工具输入和工具输出转换来自 AI SDK 官方 `toUIMessageStream`。
 
@@ -116,13 +117,13 @@ flowchart LR
 | `transport`             | IPC Fetch 代理、响应头、ACK 背压与取消传播                                                             |
 | `server`                | 共用 Request/Response API 与受保护的 loopback HTTP 入口                                                |
 
-默认使用 `isLoopFinished()`，由 Agent 根据模型的结束状态自然收尾，不限制工具推理轮数，也不强制插入总结轮。`ReviewAgentOptions.stopWhen` 支持按工具结果等业务条件配置停止判断；显式配置的停止条件结束工具循环时，保留已完成的工具结果。
+普通聊天默认使用 `isLoopFinished()`，由 Agent 根据模型的结束状态自然收尾，不限制工具推理轮数。审查模式使用同一循环，逐条通过 `submit_review` 保存问题，经 `finish_review` 校验成功后直接停止，不再发起总结轮；收尾校验失败允许模型修正。系统根据真实状态和已保存意见生成完成提示，模型普通文本不展示为另一份审查报告。`ReviewAgentOptions.stopWhen` 仍支持业务停止条件；审查若被其提前停止且没有成功收尾，会明确失败。工具契约与覆盖范围校验见 [review-tools.md](review-tools.md#增量式审查)。
 
 `ReviewAgentOptions.idleTimeoutMs` 默认 5 分钟，按无响应间隔计时，不限制整次审查时长。模型或工具有输出就重置整轮等待计时；每个并行工具另有独立计时，工具的中间结果会重置它自己的计时，其他工具的输出不会掩盖该工具卡住。超时会取消本轮并保留此前成功的会话历史。Host 代理与 Webview 使用比后端多 15 秒的传输空闲超时，并在收到响应时重置，避免旧的 2/2.5 分钟整轮限制提前中断长任务。
 
 新增厂商时实现 `ModelProvider`，用对应的官方 AI SDK Provider 创建模型，并通过 `resolveModel()` 返回 `model`、`providerOptions` 和可选的工具厂商选项。在 `BridgeService` 注册适配器即可复用共享 Agent、工具、历史与消息流；厂商适配器不实现 Agent 循环、UI 流或专有 SDK Session。认证与模型目录仍由适配器管理。
 
-前端 `useChat<ReviewChatMessage>` 消费同一 AI SDK 协议；消息类型通过 `InferAgentUIMessage` 从后端 Agent 推导，`useAISDKRuntime` 将消息、发送和停止状态提供给 assistant-ui。`submitted/streaming` 表示运行中，正常结束及主动停止回到 `ready`，错误进入 `error`。切换会话会停止旧请求，面板销毁取消 IPC 操作，扩展退出关闭 Bridge。`data-run-state` 仍是 transient 扩展事件，前端不依赖轮询驱动消息状态。
+前端 `useChat<ReviewChatMessage>` 消费同一 AI SDK 协议；工具消息类型通过 `InferUITools` 从后端定义推导，并声明系统审查状态/回执数据类型，`useAISDKRuntime` 将消息、发送和停止状态提供给 assistant-ui。`submitted/streaming` 表示运行中，正常结束及主动停止回到 `ready`，错误进入 `error`。切换会话会停止旧请求，面板销毁取消 IPC 操作，扩展退出关闭 Bridge。审查意见写入独立 Host 账本后即时缓存到 webview；刷新及终态重新读取 `/reviews` 恢复已保存 Tool UI，Host 尚在取消时短暂查询直到终态。正常流式交互仍由 SSE 驱动。
 
 保留已有 `openai-agents` Provider ID 以兼容面板、登录命令、HTTP 客户端和 smoke 脚本；该标识不表示仍使用 OpenAI Agents SDK。OAuth 的存储键和注册信息不变。Host 历史原本就只在当前进程存活，重启后仍须新建会话。
 
