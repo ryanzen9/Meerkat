@@ -19,10 +19,13 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { cn } from '@/lib/utils';
 import { SyntaxHighlighter } from './syntax-highlighter';
 
-type MarkdownTextProps = Partial<TextMessagePartProps> & {
-  components?: Parameters<typeof memoizeMarkdownComponents>[0];
-  componentsByLanguage?: MarkdownTextPrimitiveProps['componentsByLanguage'];
-};
+type MarkdownTextProps = Partial<TextMessagePartProps> &
+  Pick<
+    MarkdownTextPrimitiveProps,
+    'className' | 'smooth' | 'skipHtml' | 'urlTransform' | 'componentsByLanguage'
+  > & {
+    components?: Parameters<typeof memoizeMarkdownComponents>[0];
+  };
 
 const useShallowStable = <T extends Record<string, unknown> | undefined>(value: T): T => {
   const ref = useRef(value);
@@ -38,7 +41,14 @@ const useShallowStable = <T extends Record<string, unknown> | undefined>(value: 
   return ref.current;
 };
 
-const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, componentsByLanguage }) => {
+const MarkdownTextImpl: FC<MarkdownTextProps> = ({
+  components,
+  componentsByLanguage,
+  className,
+  smooth,
+  skipHtml,
+  urlTransform,
+}) => {
   const stableComponents = useShallowStable(components);
   const stableComponentsByLanguage = useShallowStable(componentsByLanguage);
   const markdownComponents = useMemo(() => {
@@ -52,7 +62,10 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, componentsByLangu
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm]}
-      className="aui-md"
+      className={cn('aui-md min-w-0 max-w-full', className)}
+      smooth={smooth}
+      skipHtml={skipHtml}
+      urlTransform={urlTransform}
       components={markdownComponents}
       componentsByLanguage={stableComponentsByLanguage}
       defer
@@ -175,9 +188,17 @@ const defaultComponents = memoizeMarkdownComponents({
     <hr className={cn('aui-md-hr border-muted-foreground/20 my-3', className)} {...props} />
   ),
   table: ({ className, ...props }) => (
-    <div className="aui-md-table-wrapper my-3 overflow-x-auto">
+    <div
+      role="region"
+      aria-label="表格（可横向滚动）"
+      tabIndex={0}
+      className="aui-md-table-wrapper my-3 max-w-full overflow-x-auto rounded-md border border-foreground/15"
+    >
       <table
-        className={cn('aui-md-table w-full border-separate border-spacing-0', className)}
+        className={cn(
+          'aui-md-table w-full border-separate border-spacing-0 text-[0.9em] wrap-normal',
+          className,
+        )}
         {...props}
       />
     </div>
@@ -185,7 +206,7 @@ const defaultComponents = memoizeMarkdownComponents({
   th: ({ className, ...props }) => (
     <th
       className={cn(
-        'aui-md-th bg-surface px-3 py-1.5 text-start font-medium first:rounded-ss-lg last:rounded-se-lg [[align=center]]:text-center [[align=right]]:text-right',
+        'aui-md-th min-w-32 border-e border-b border-foreground/15 bg-surface px-3 py-2 text-start align-top font-semibold last:border-e-0',
         className,
       )}
       {...props}
@@ -194,20 +215,14 @@ const defaultComponents = memoizeMarkdownComponents({
   td: ({ className, ...props }) => (
     <td
       className={cn(
-        'aui-md-td border-muted-foreground/20 border-s border-b px-3 py-1.5 text-start last:border-e [[align=center]]:text-center [[align=right]]:text-right',
+        'aui-md-td min-w-32 border-e border-b border-foreground/15 px-3 py-2 text-start align-top last:border-e-0',
         className,
       )}
       {...props}
     />
   ),
   tr: ({ className, ...props }) => (
-    <tr
-      className={cn(
-        'aui-md-tr m-0 border-b p-0 first:border-t [&:last-child>td:first-child]:rounded-es-lg [&:last-child>td:last-child]:rounded-ee-lg',
-        className,
-      )}
-      {...props}
-    />
+    <tr className={cn('aui-md-tr [&:last-child>td]:border-b-0', className)} {...props} />
   ),
   li: ({ className, ...props }) => (
     <li className={cn('aui-md-li leading-relaxed', className)} {...props} />
@@ -221,7 +236,7 @@ const defaultComponents = memoizeMarkdownComponents({
   pre: ({ className, ...props }) => (
     <pre
       className={cn(
-        'aui-md-pre border-border/50 bg-surface/30 overflow-x-auto rounded-t-none rounded-b-xl border border-t-0 p-3.5 text-[13px] leading-relaxed',
+        'aui-md-pre mb-3 max-w-full overflow-x-auto rounded-b-md border border-t-0 border-widget bg-code p-3 leading-relaxed whitespace-pre',
         className,
       )}
       {...props}
@@ -232,8 +247,9 @@ const defaultComponents = memoizeMarkdownComponents({
     return (
       <code
         className={cn(
-          !isCodeBlock &&
-            'aui-md-inline-code bg-surface rounded-md px-1.5 py-0.5 font-mono text-[0.85em]',
+          isCodeBlock
+            ? 'font-mono text-[0.85rem]'
+            : 'aui-md-inline-code rounded-sm bg-code px-1 py-0.5 font-mono text-[0.9em]',
           className,
         )}
         {...props}

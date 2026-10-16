@@ -1,11 +1,12 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
 import { ActionBarPrimitive, useAuiState } from '@assistant-ui/react';
-import { MarkdownTextPrimitive, useIsMarkdownCodeBlock } from '@assistant-ui/react-markdown';
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
+import type { GitRepositoryInfo, PanelSnapshot } from '@shared/models';
+import { ReviewGitContext } from './GitStatusLine';
 import { Icon } from './Icon';
 import { Thread, type ThreadComponents } from './assistant-ui/elements/thread.aui';
-import { SyntaxHighlighter } from './assistant-ui/elements/syntax-highlighter';
+import { MarkdownText } from './assistant-ui/elements/markdown-text';
 import { cn } from '../lib/utils';
 import { isFileReferenceId } from '@shared/protocol';
 import {
@@ -113,44 +114,23 @@ function MarkdownLink({ href, children }: ComponentPropsWithoutRef<'a'>) {
   );
 }
 
-function MarkdownCode({ className, ...props }: ComponentPropsWithoutRef<'code'>) {
-  const block = useIsMarkdownCodeBlock();
-  return (
-    <code
-      {...props}
-      className={cn(
-        block
-          ? 'font-mono text-[0.85rem]'
-          : 'rounded-sm bg-code px-1 py-0.5 font-mono text-[0.9em]',
-        className,
-      )}
-    />
-  );
-}
+const MARKDOWN_COMPONENTS = {
+  CodeHeader,
+  a: MarkdownLink,
+  img: ({ alt }: ComponentPropsWithoutRef<'img'>) => <span className="text-muted">{alt}</span>,
+};
 
-function MarkdownText() {
+const markdownUrlTransform = (url: string) =>
+  /^(https?:|mailto:|review-file:)/.test(url) ? url : '';
+
+function ReviewMarkdownText() {
   return (
-    <MarkdownTextPrimitive
-      className="min-w-0 text-[0.95rem] leading-relaxed wrap-anywhere [&_blockquote]:my-2 [&_blockquote]:border-l-2 [&_blockquote]:border-link [&_blockquote]:pl-3 [&_h1]:my-3 [&_h1]:font-semibold [&_h2]:my-3 [&_h2]:font-semibold [&_h3]:my-2 [&_h3]:font-semibold [&_img]:hidden [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p:first-child]:mt-0 [&_p:last-child]:mb-0 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+    <MarkdownText
+      className="text-[0.95rem] leading-relaxed wrap-anywhere"
       smooth={false}
       skipHtml
-      urlTransform={(url) => (/^(https?:|mailto:|review-file:)/.test(url) ? url : '')}
-      components={{
-        CodeHeader,
-        SyntaxHighlighter,
-        a: MarkdownLink,
-        img: ({ alt }) => <span className="text-muted">{alt}</span>,
-        code: MarkdownCode,
-        pre: ({ className, ...props }) => (
-          <pre
-            {...props}
-            className={cn(
-              'mb-3 max-w-full overflow-x-auto rounded-b-md border border-t-0 border-widget bg-code p-3 leading-relaxed whitespace-pre',
-              className,
-            )}
-          />
-        ),
-      }}
+      urlTransform={markdownUrlTransform}
+      components={MARKDOWN_COMPONENTS}
     />
   );
 }
@@ -240,7 +220,7 @@ function ReviewAssistantActionBar() {
 // are not exposed until the Bridge supports replacing the remote history.
 const THREAD_COMPONENTS: ThreadComponents = {
   Welcome: ReviewWelcome,
-  Text: MarkdownText,
+  Text: ReviewMarkdownText,
   ComposerInput: ReviewComposerInput,
   ComposerFooter: ReviewComposerFooter,
   ComposerLeading: ReviewModelSelector,
@@ -253,16 +233,22 @@ const THREAD_COMPONENTS: ThreadComponents = {
 export function AgentChat({
   authenticated,
   onFiles,
+  snapshot,
+  repository,
   ...composer
 }: ReviewComposerState & {
   authenticated: boolean;
   onFiles(): void;
+  snapshot: PanelSnapshot | null;
+  repository: GitRepositoryInfo | undefined;
 }) {
   return (
     <WelcomeContext.Provider value={{ authenticated, onFiles }}>
-      <ReviewComposerContext.Provider value={composer}>
-        <Thread components={THREAD_COMPONENTS} autoFocus={false} />
-      </ReviewComposerContext.Provider>
+      <ReviewGitContext.Provider value={{ snapshot, repository }}>
+        <ReviewComposerContext.Provider value={composer}>
+          <Thread components={THREAD_COMPONENTS} autoFocus={false} />
+        </ReviewComposerContext.Provider>
+      </ReviewGitContext.Provider>
     </WelcomeContext.Provider>
   );
 }

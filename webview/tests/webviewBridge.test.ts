@@ -16,6 +16,7 @@ import type {
   ExtensionToWebviewMessage,
   WebviewToExtensionMessage,
 } from '../../src/shared/protocol';
+import type { PanelSnapshot } from '../../src/shared/models';
 import { createSession, appendTurn, restoreReviewState } from '../src/state/reviewState';
 import type { AgentModel, ReasoningEffort } from '../../src/shared/agentModels';
 
@@ -56,6 +57,7 @@ class TestHost {
   modelFailure = false;
   modelGate: Promise<AgentModel[]> | undefined;
   modelRequests = 0;
+  git: PanelSnapshot['git'] = { available: false, repositories: [] };
   includeTool = false;
   responseText?: string;
   deleteFailures = 0;
@@ -270,7 +272,7 @@ class TestHost {
             workspace: { name: 'Fixture', folders: [], trusted: true },
             settings: { greeting: '', showWorkspacePaths: true },
             state: { messageCount: 0 },
-            git: { available: false, repositories: [] },
+            git: this.git,
           },
         });
         break;
@@ -298,6 +300,7 @@ let render: (typeof import('@testing-library/react'))['render'];
 let fireEvent: (typeof import('@testing-library/react'))['fireEvent'];
 let cleanup: (typeof import('@testing-library/react'))['cleanup'];
 let waitFor: (typeof import('@testing-library/react'))['waitFor'];
+let within: (typeof import('@testing-library/react'))['within'];
 let act: (typeof import('react'))['act'];
 let createElement: (typeof import('react'))['createElement'];
 let StrictMode: (typeof import('react'))['StrictMode'];
@@ -350,7 +353,7 @@ beforeAll(async () => {
       host.savedState = state;
     },
   }));
-  ({ render, fireEvent, cleanup, waitFor } = await import('@testing-library/react/pure'));
+  ({ render, fireEvent, cleanup, waitFor, within } = await import('@testing-library/react/pure'));
   ({ act, createElement, StrictMode } = await import('react'));
   ({ App } = await import('../src/App'));
 });
@@ -790,6 +793,58 @@ test('reference navigation errors are displayed without resending a chat turn', 
   expect(host.openedFiles).toEqual([]);
 });
 
+test('chat renders GFM tables, alignment, task lists and strikethrough through the shared renderer', async () => {
+  host.responseText = [
+    '| 工具 | 用途 | 次数 |',
+    '| :--- | :---: | ---: |',
+    '| `review.get_review_context` | 获取当前仓库 | 1 |',
+    '| `review.list_changes` | 创建审查快照 | 2 |',
+    '',
+    '~~旧工具~~',
+    '',
+    '- [x] 已完成',
+    '- [ ] 待处理',
+  ].join('\n');
+  const view = mount();
+  await connected(view);
+  await send(view, 'list available tools');
+  const table = await view.findByRole('table');
+  expect(within(table).getAllByRole('row')).toHaveLength(3);
+  expect(
+    within(table)
+      .getAllByRole('columnheader')
+      .map((cell) => cell.textContent),
+  ).toEqual(['工具', '用途', '次数']);
+  expect(table.querySelector('tbody td code')?.textContent).toBe('review.get_review_context');
+  expect(table.querySelectorAll('th')[1]?.style.textAlign).toBe('center');
+  expect(table.querySelectorAll('th')[2]?.style.textAlign).toBe('right');
+  expect(view.container.querySelector('del')?.textContent).toBe('旧工具');
+  expect(view.getAllByRole('checkbox').map((input) => (input as HTMLInputElement).checked)).toEqual(
+    [true, false],
+  );
+});
+
+test('shared chat Markdown preserves inert HTML and images and filters unsafe link protocols', async () => {
+  host.responseText = [
+    '[安全链接](https://example.com/docs)',
+    '[危险链接](javascript:alert%281%29)',
+    '![图片说明](https://example.com/image.png)',
+    '',
+    '<img src="https://example.com/raw.png" />',
+    '<iframe src="https://example.com/embed"></iframe>',
+  ].join('\n');
+  const view = mount();
+  await connected(view);
+  await send(view, 'render Markdown safely');
+  const link = await view.findByRole('link', { name: '安全链接' });
+  expect(link.getAttribute('href')).toBe('https://example.com/docs');
+  expect(link.getAttribute('target')).toBe('_blank');
+  expect(view.getByText('危险链接').getAttribute('href')).toBe('');
+  expect(view.getByText('图片说明')).toBeDefined();
+  const assistant = view.container.querySelector('[data-slot="aui_assistant-message-root"]')!;
+  expect(assistant.querySelector('img, iframe, script')).toBeNull();
+});
+
 test('syntax highlighting preserves code, inline text, unknown languages and Host code actions', async () => {
   const code = 'const total: number = 1;\n';
   host.responseText =
@@ -858,6 +913,48 @@ test('streamed deltas render live with bounded persistence and flush the complet
   const restored = mount();
   await connected(restored);
   expect(restored.getByText(`${expected} final`)).toBeDefined();
+});
+
+test('GFM tables render while their header, code spans and rows arrive in separate deltas', async () => {
+  const view = mount();
+  await streaming(view);
+  await act(async () => {
+    host.streamOutput!.enqueue({
+      type: 'text-delta',
+      id: host.streamId,
+      delta: '\n\n| 工具 | 用途 |\n| --- | --- |\n| `review.get_',
+    });
+  });
+  const table = await view.findByRole('table');
+  expect(
+    within(table)
+      .getAllByRole('columnheader')
+      .map((cell) => cell.textContent),
+  ).toEqual(['工具', '用途']);
+  await act(async () => {
+    host.streamOutput!.enqueue({
+      type: 'text-delta',
+      id: host.streamId,
+      delta: 'review_context` | 获取当前仓库 |',
+    });
+  });
+  await waitFor(() =>
+    expect(table.querySelector('tbody td code')?.textContent).toBe('review.get_review_context'),
+  );
+  await act(async () => {
+    host.streamOutput!.enqueue({
+      type: 'text-delta',
+      id: host.streamId,
+      delta: '\n| `review.list_changes` | 创建审查快照 |',
+    });
+    host.streamOutput!.enqueue({ type: 'text-end', id: host.streamId });
+    host.streamOutput!.enqueue(finishChunk('stop'));
+    host.streamOutput!.close();
+    await host.settle();
+  });
+  await waitFor(() => expect(within(table).getAllByRole('row')).toHaveLength(3));
+  expect(table.querySelectorAll('tbody td code')[1]?.textContent).toBe('review.list_changes');
+  expect(view.queryByRole('alert')).toBeNull();
 });
 
 for (const terminal of ['error', 'cancel', 'new-session'] as const) {
@@ -1096,4 +1193,74 @@ test('failed eviction deletion survives reload and retries; already missing Host
     expect(restoreReviewState(host.savedState).pendingBridgeSessionDeletes).toEqual([]),
   );
   expect(view.queryByRole('alert')).toBeNull();
+});
+
+const gitRepository: PanelSnapshot['git']['repositories'][number] = {
+  rootUri: 'file:///repo',
+  name: 'review-bot',
+  branch: 'feat/webview-layout',
+  remotes: ['origin'],
+  changes: [
+    { uri: 'file:///repo/src/a.ts', path: 'src/a.ts', kind: 'modified' },
+    { uri: 'file:///repo/src/b.ts', path: 'src/b.ts', kind: 'added' },
+  ],
+  stagedChanges: [{ uri: 'file:///repo/src/c.ts', path: 'src/c.ts', kind: 'deleted' }],
+};
+
+test('workspace context moves into Files while the Thread keeps one Git summary line', async () => {
+  host.git = { available: true, repositories: [gitRepository] };
+  const view = mount();
+  await connected(view);
+  const chat = view.container.querySelector<HTMLElement>('#panel-chat')!;
+  const files = view.container.querySelector<HTMLElement>('#panel-files')!;
+  expect(chat.querySelectorAll('[aria-label="工作区上下文"]')).toHaveLength(0);
+  expect(files.querySelectorAll('[aria-label="工作区上下文"]')).toHaveLength(1);
+
+  // One single-line summary below the composer: branch, status and counts.
+  const gitLines = chat.querySelectorAll('[data-slot="review-git-status"]');
+  expect(gitLines).toHaveLength(1);
+  const line = gitLines[0]!.textContent!;
+  expect(line).toContain('feat/webview-layout');
+  expect(line).toContain('3 changed');
+  expect(line).toContain('+1');
+  expect(line).toContain('~1');
+  expect(line).toContain('−1');
+  expect(gitLines[0]!.querySelectorAll('p, div, li, section')).toHaveLength(0);
+
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  const filesTab = within(files);
+  expect(filesTab.getByText('review-bot')).toBeDefined();
+  expect(filesTab.getByText('Idle')).toBeDefined();
+
+  // Both groups start expanded, one row per file.
+  const changes = filesTab.getByRole('button', { name: /^Changes/ });
+  const staged = filesTab.getByRole('button', { name: /^Staged Changes/ });
+  expect(changes.getAttribute('aria-expanded')).toBe('true');
+  expect(staged.getAttribute('aria-expanded')).toBe('true');
+  expect(filesTab.getByRole('button', { name: '修改 src/a.ts' })).toBeDefined();
+  expect(filesTab.getByRole('button', { name: '新增 src/b.ts' })).toBeDefined();
+  expect(filesTab.getByRole('button', { name: '删除 src/c.ts' })).toBeDefined();
+
+  // Collapsing one group hides only its own rows and can be reopened.
+  fireEvent.click(changes);
+  expect(changes.getAttribute('aria-expanded')).toBe('false');
+  expect(files.querySelector<HTMLElement>('#change-group-changes')!.hidden).toBe(true);
+  expect(filesTab.queryByRole('button', { name: '修改 src/a.ts' })).toBeNull();
+  expect(filesTab.getByRole('button', { name: '删除 src/c.ts' })).toBeDefined();
+  fireEvent.click(changes);
+  expect(filesTab.getByRole('button', { name: '修改 src/a.ts' })).toBeDefined();
+  fireEvent.click(staged);
+  expect(files.querySelector<HTMLElement>('#change-group-staged-changes')!.hidden).toBe(true);
+
+  // The context header collapses to its summary row.
+  fireEvent.click(filesTab.getByRole('button', { name: '收起工作区上下文' }));
+  const toggle = filesTab.getByRole('button', { name: '展开工作区上下文' });
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(files.querySelector<HTMLElement>('#review-context-details')!.hidden).toBe(true);
+
+  await act(async () => {
+    fireEvent.click(filesTab.getByRole('button', { name: '修改 src/a.ts' }));
+    await host.settle();
+  });
+  expect(host.openedFiles).toEqual(['file:///repo/src/a.ts']);
 });
