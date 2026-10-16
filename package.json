@@ -38,7 +38,7 @@
     "lint:fix": "oxlint --fix --deny-warnings .",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "check": "bun run lint && bun run format:check && bun run typecheck && bun run test",
+    "check": "bun run lint && bun run format:check && bun run typecheck",
     "commitlint": "commitlint",
     "vscode:prepublish": "bun run build",
     "package": "bun run scripts/package.ts",

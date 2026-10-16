@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import type { GitRepositoryInfo, PanelSnapshot } from '@shared/models';
 import { changeCounts } from '@shared/git';
+import { cn } from '../lib/utils';
+import { gitStatusText } from '../lib/gitStatus';
 import { Icon } from './Icon';
 
 interface ReviewContextProps {
@@ -10,6 +13,10 @@ interface ReviewContextProps {
   onRepositoryChange(uri: string): void;
 }
 
+/**
+ * Workspace context header of the Files tab. The summary row stays visible;
+ * the Git detail row collapses so the file list keeps the vertical space.
+ */
 export function ReviewContext({
   snapshot,
   repository,
@@ -17,6 +24,7 @@ export function ReviewContext({
   error,
   onRepositoryChange,
 }: ReviewContextProps) {
+  const [expanded, setExpanded] = useState(true);
   const counts = changeCounts(repository);
   const review =
     snapshot?.review?.repositoryUri === repository?.rootUri ? snapshot?.review : undefined;
@@ -42,29 +50,31 @@ export function ReviewContext({
         : review?.status === 'ready'
           ? 'border-added/30 bg-added/10 text-added'
           : 'border-widget bg-sidebar text-muted';
-  const gitStatus = !snapshot
-    ? '正在连接扩展'
-    : !snapshot.workspace.trusted
-      ? '受限模式'
-      : !snapshot.git.available
-        ? 'Git 不可用'
-        : !repository
-          ? '无 Git 仓库'
-          : counts.conflicts
-            ? `${counts.conflicts} conflict${counts.conflicts > 1 ? 's' : ''}`
-            : counts.total
-              ? `${counts.total} changed`
-              : 'Clean';
+  const gitStatus = gitStatusText(snapshot, repository);
   return (
-    <section
-      aria-label="工作区上下文"
-      className="flex h-[72px] shrink-0 flex-col justify-center gap-2 border-b border-widget bg-surface px-3"
-    >
-      <div className="flex min-w-0 items-center justify-between gap-2">
+    <section aria-label="工作区上下文" className="shrink-0 border-b border-widget bg-surface">
+      <div className="flex min-w-0 items-center gap-1.5 px-2 py-1.5">
+        <button
+          type="button"
+          className="icon-button size-5"
+          aria-expanded={expanded}
+          aria-controls="review-context-details"
+          aria-label={expanded ? '收起工作区上下文' : '展开工作区上下文'}
+          title={expanded ? '收起工作区上下文' : '展开工作区上下文'}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <Icon
+            name="chevron"
+            className={cn(
+              'size-3 text-muted transition-transform motion-reduce:transition-none',
+              expanded && 'rotate-90',
+            )}
+          />
+        </button>
         {snapshot && snapshot.git.repositories.length > 1 ? (
           <select
             aria-label="选择 Git 仓库"
-            className="min-w-0 flex-1 truncate rounded-sm bg-input py-0.5 text-input-foreground"
+            className="min-w-0 flex-1 truncate rounded-sm bg-input py-0.5 text-[0.8rem] text-input-foreground"
             value={repository?.rootUri ?? ''}
             onChange={(event) => onRepositoryChange(event.target.value)}
           >
@@ -75,7 +85,10 @@ export function ReviewContext({
             ))}
           </select>
         ) : (
-          <span className="truncate font-semibold" title={repository?.rootUri}>
+          <span
+            className="min-w-0 flex-1 truncate text-[0.85rem] font-semibold"
+            title={repository?.rootUri}
+          >
             {review?.pullRequestNumber
               ? `PR #${review.pullRequestNumber} · ${repository?.branch ?? repository?.name}`
               : (repository?.name ?? snapshot?.workspace.name ?? 'Workspace')}
@@ -83,13 +96,17 @@ export function ReviewContext({
         )}
         <span
           role="status"
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[0.8rem] ${statusColor}`}
+          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-1.5 py-0.5 text-[0.75rem] ${statusColor}`}
         >
           <span className="size-1.5 rounded-full bg-current" />
           {status}
         </span>
       </div>
-      <div className="flex min-w-0 items-center gap-2 text-[0.85rem] text-muted">
+      <div
+        id="review-context-details"
+        hidden={!expanded}
+        className="flex min-w-0 items-center gap-2 px-2 pb-1.5 text-[0.8rem] text-muted"
+      >
         <span
           className="flex min-w-0 flex-1 items-center gap-1.5"
           title={[repository?.branch, ...(repository?.remotes ?? [])].filter(Boolean).join(' · ')}
@@ -102,7 +119,7 @@ export function ReviewContext({
         <span className="shrink-0">{gitStatus}</span>
         {repository && (
           <span
-            className="flex shrink-0 gap-1.5 font-mono text-[0.85rem]"
+            className="flex shrink-0 gap-1.5 font-mono"
             aria-label={`新增 ${counts.added}，修改 ${counts.modified}，删除 ${counts.deleted}`}
           >
             <span className="text-added" title="新增文件">

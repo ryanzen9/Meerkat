@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { GitFileChange, GitRepositoryInfo, PanelSnapshot } from '@shared/models';
+import { cn } from '../lib/utils';
 import { Icon } from './Icon';
 
 const presentation = {
@@ -10,62 +12,83 @@ const presentation = {
 };
 
 function ChangeGroup({
+  id,
   title,
   files,
+  empty,
   onOpen,
 }: {
+  id: string;
   title: string;
   files: GitFileChange[];
+  empty: string;
   onOpen(uri: string): void;
 }) {
+  const [expanded, setExpanded] = useState(true);
+  const panelId = `change-group-${id}`;
   return (
-    <section aria-label={title} className="mb-5">
-      <div className="mb-2 flex items-center justify-between px-1">
-        <h2 className="text-[0.85rem] font-semibold">{title}</h2>
-        <span className="rounded-full bg-badge px-1.5 text-[0.75rem] text-badge-foreground">
+    <section aria-label={title} className="mb-3">
+      <button
+        type="button"
+        className="flex w-full min-w-0 items-center gap-1.5 rounded-sm px-1 py-1 text-left hover:bg-hover"
+        aria-expanded={expanded}
+        aria-controls={panelId}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <Icon
+          name="chevron"
+          className={cn(
+            'size-3 text-muted transition-transform motion-reduce:transition-none',
+            expanded && 'rotate-90',
+          )}
+        />
+        <span className="text-[0.85rem] font-semibold">{title}</span>
+        <span className="ml-auto rounded-full bg-badge px-1.5 text-[0.7rem] leading-4 text-badge-foreground">
           {files.length}
         </span>
-      </div>
-      {files.length ? (
-        <ul className="space-y-0.5">
-          {files.map((file) => {
-            const style = presentation[file.kind];
-            const separator = file.path.lastIndexOf('/');
-            return (
-              <li key={file.uri}>
-                <button
-                  type="button"
-                  className="group flex w-full min-w-0 items-center gap-2 rounded-sm px-1 py-2 text-left hover:bg-hover"
-                  onClick={() => onOpen(file.uri)}
-                  title={`${file.path} · ${style.label}`}
-                  aria-label={`${style.label} ${file.path}`}
-                >
-                  <Icon name="file" className={`size-3.5 ${style.color}`} />
-                  <span className="min-w-0 flex-1">
-                    <span className={`block truncate text-[0.9rem] ${style.color}`}>
+      </button>
+      <div id={panelId} hidden={!expanded}>
+        {files.length ? (
+          <ul className="space-y-px">
+            {files.map((file) => {
+              const style = presentation[file.kind];
+              const separator = file.path.lastIndexOf('/');
+              return (
+                <li key={file.uri}>
+                  <button
+                    type="button"
+                    className="group flex w-full min-w-0 items-center gap-1.5 rounded-sm px-1 py-[3px] text-left hover:bg-hover"
+                    onClick={() => onOpen(file.uri)}
+                    title={`${file.path} · ${style.label}`}
+                    aria-label={`${style.label} ${file.path}`}
+                  >
+                    <Icon name="file" className={cn('size-3.5 shrink-0', style.color)} />
+                    <span className={cn('min-w-0 flex-1 truncate text-[0.85rem]', style.color)}>
                       {file.path.slice(separator + 1)}
                     </span>
                     {separator >= 0 && (
-                      <span className="block truncate font-mono text-[0.75rem] text-muted">
+                      <span className="max-w-[45%] min-w-0 shrink truncate font-mono text-[0.72rem] text-muted">
                         {file.path.slice(0, separator)}
                       </span>
                     )}
-                  </span>
-                  <span className={`font-mono text-[0.8rem] ${style.color}`}>{style.badge}</span>
-                  <Icon
-                    name="open"
-                    className="size-3 text-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
-                  />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      ) : (
-        <p className="rounded-md border border-dashed border-widget px-3 py-4 text-[0.85rem] text-muted">
-          {title === 'Changes' ? '没有未暂存的变更。' : '没有已暂存的变更。'}
-        </p>
-      )}
+                    <span className={cn('shrink-0 font-mono text-[0.75rem]', style.color)}>
+                      {style.badge}
+                    </span>
+                    <Icon
+                      name="open"
+                      className="size-3 shrink-0 text-muted opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100"
+                    />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="rounded-md border border-dashed border-widget px-2 py-2 text-[0.8rem] text-muted">
+            {empty}
+          </p>
+        )}
+      </div>
     </section>
   );
 }
@@ -100,10 +123,22 @@ export function FileChanges({
       </div>
     );
   return (
-    <div className="p-3">
-      <p className="mb-4 text-[0.8rem] text-muted">与 Source Control 同步 · 点击文件打开</p>
-      <ChangeGroup title="Changes" files={repository.changes} onOpen={onOpen} />
-      <ChangeGroup title="Staged Changes" files={repository.stagedChanges} onOpen={onOpen} />
+    <div className="px-2 py-2">
+      <p className="mb-2 text-[0.75rem] text-muted">与 Source Control 同步 · 点击文件打开</p>
+      <ChangeGroup
+        id="changes"
+        title="Changes"
+        files={repository.changes}
+        empty="没有未暂存的变更。"
+        onOpen={onOpen}
+      />
+      <ChangeGroup
+        id="staged-changes"
+        title="Staged Changes"
+        files={repository.stagedChanges}
+        empty="没有已暂存的变更。"
+        onOpen={onOpen}
+      />
     </div>
   );
 }

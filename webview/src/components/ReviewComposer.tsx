@@ -1,5 +1,6 @@
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react';
 import { createContext, useContext, useEffect, useEffectEvent, useMemo, useState } from 'react';
+import { GitStatusLine } from './GitStatusLine';
 import { Icon } from './Icon';
 import { OpenAILogo } from './assistant-ui/elements/logos';
 import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
@@ -133,23 +134,26 @@ export function ReviewComposerFooter() {
   const { onNew, modelsLoading } = useContext(ReviewComposerContext)!;
   const text = useAuiState((state) => state.composer.text);
   return (
-    <div className="mt-1.5 flex min-w-0 items-center justify-between gap-2 text-[0.7rem] text-muted">
-      <span id="composer-hint" className="truncate" aria-live="polite">
-        {modelsLoading
-          ? '正在加载模型…'
-          : text.length === 4000
-            ? '已达到 4000 字符上限'
-            : 'Enter 发送 · Shift+Enter 换行'}
-      </span>
-      <button
-        type="button"
-        className="icon-button size-4"
-        aria-label="新建会话"
-        title="新建会话"
-        onClick={onNew}
-      >
-        <Icon name="plus" className="size-3" />
-      </button>
+    <div className="mt-1 flex min-w-0 flex-col gap-0.5 text-[0.7rem] text-muted">
+      <GitStatusLine />
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <span id="composer-hint" className="truncate" aria-live="polite">
+          {modelsLoading
+            ? '正在加载模型…'
+            : text.length === 4000
+              ? '已达到 4000 字符上限'
+              : 'Enter 发送 · Shift+Enter 换行'}
+        </span>
+        <button
+          type="button"
+          className="icon-button size-4"
+          aria-label="新建会话"
+          title="新建会话"
+          onClick={onNew}
+        >
+          <Icon name="plus" className="size-3" />
+        </button>
+      </div>
     </div>
   );
 }

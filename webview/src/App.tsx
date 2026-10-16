@@ -46,13 +46,6 @@ export function App() {
               void panel.openCode(chat.exportMarkdown(), 'markdown').catch(() => {});
             }}
           />
-          <ReviewContext
-            snapshot={panel.snapshot}
-            repository={repository}
-            refreshing={panel.refreshing}
-            error={!!panel.error}
-            onRepositoryChange={chat.selectRepository}
-          />
           <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
             <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-widget px-3 py-2 text-[0.8rem]">
               {connection.authenticated ? (
@@ -159,6 +152,8 @@ export function App() {
               <AgentChat
                 authenticated={connection.authenticated}
                 onFiles={() => chat.setTab('files')}
+                snapshot={panel.snapshot}
+                repository={repository}
                 sessionId={chat.session.id}
                 draft={chat.session.draft}
                 onDraftChange={chat.setDraft}
@@ -183,16 +178,25 @@ export function App() {
               role="tabpanel"
               aria-labelledby="tab-files"
               hidden={chat.activeTab !== 'files'}
-              className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
+              className="flex min-h-0 flex-1 flex-col overflow-hidden"
               tabIndex={0}
             >
-              <FileChanges
+              <ReviewContext
                 snapshot={panel.snapshot}
                 repository={repository}
-                onOpen={(uri) => {
-                  void panel.openFile(uri).catch(() => {});
-                }}
+                refreshing={panel.refreshing}
+                error={!!panel.error}
+                onRepositoryChange={chat.selectRepository}
               />
+              <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+                <FileChanges
+                  snapshot={panel.snapshot}
+                  repository={repository}
+                  onOpen={(uri) => {
+                    void panel.openFile(uri).catch(() => {});
+                  }}
+                />
+              </div>
             </section>
             <section
               id="panel-history"
