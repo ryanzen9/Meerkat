@@ -37,9 +37,9 @@ function startWatcher(root: string) {
         await Bun.sleep(25);
       }
     },
-    async stop() {
+    async stop(signal: NodeJS.Signals = 'SIGTERM') {
       stopped ??= (async () => {
-        if (child.exitCode === null) child.kill();
+        if (child.exitCode === null) child.kill(signal);
         let timeout: ReturnType<typeof setTimeout> | undefined;
         try {
           const result = await Promise.race([
@@ -149,7 +149,58 @@ test('an initial build failure keeps F5 waiting until the source is fixed', asyn
   }
 }, 30000);
 
-test('stopping during the first build terminates the Vite child and removes the lock', async () => {
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  test(`stopping during the first build with ${signal} terminates Vite and removes the lock`, async () => {
+    const root = await createProjectFixture();
+    const configPath = join(root, 'vite.config.ts');
+    const config = await Bun.file(configPath).text();
+    await Bun.write(
+      configPath,
+      config.replace(
+        'publicDir: false,',
+        `publicDir: false,
+       plugins: [{ name: 'pause-build', async buildStart() {
+         console.log('fixture-child-pid:' + process.pid);
+         await new Promise(resolve => setTimeout(resolve, 30000));
+       } }],`,
+      ),
+    );
+    const watcher = startWatcher(root);
+    try {
+      await watcher.waitFor('fixture-child-pid:');
+      const pid = Number(watcher.output().match(/fixture-child-pid:(\d+)/)?.[1]);
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+      expect(await watcher.stop(signal)).toBe(0);
+      expect(() => process.kill(pid, 0)).toThrow();
+      expect(await Bun.file(join(root, 'dist/.watch.lock')).exists()).toBe(false);
+    } finally {
+      await watcher.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30000);
+}
+
+test('a watcher force-killed after ready can restart without manually removing its lock', async () => {
+  const root = await createProjectFixture();
+  const first = startWatcher(root);
+  let restarted: ReturnType<typeof startWatcher> | undefined;
+  try {
+    await first.waitFor('[watch] ready');
+    expect(await first.stop('SIGKILL')).not.toBe(0);
+    const abandoned = await Bun.file(join(root, 'dist/.watch.lock')).json();
+    expect(() => process.kill(abandoned.pid, 0)).toThrow();
+    restarted = startWatcher(root);
+    await restarted.waitFor('[watch] ready');
+    expect(await Bun.file(join(root, 'dist/.watch.lock')).json()).not.toEqual(abandoned);
+  } finally {
+    await first.stop();
+    if (restarted) expect(await restarted.stop()).toBe(0);
+    expect(await Bun.file(join(root, 'dist/.watch.lock')).exists()).toBe(false);
+    await rm(root, { recursive: true, force: true });
+  }
+}, 30000);
+
+test('force-killing the coordinator during a build also stops Vite before restart', async () => {
   const root = await createProjectFixture();
   const configPath = join(root, 'vite.config.ts');
   const config = await Bun.file(configPath).text();
@@ -164,16 +215,39 @@ test('stopping during the first build terminates the Vite child and removes the 
        } }],`,
     ),
   );
-  const watcher = startWatcher(root);
+  const first = startWatcher(root);
+  let restarted: ReturnType<typeof startWatcher> | undefined;
+  let buildPid: number | undefined;
   try {
-    await watcher.waitFor('fixture-child-pid:');
-    const pid = Number(watcher.output().match(/fixture-child-pid:(\d+)/)?.[1]);
-    expect(Number.isInteger(pid) && pid > 0).toBe(true);
-    expect(await watcher.stop()).toBe(0);
-    expect(() => process.kill(pid, 0)).toThrow();
-    expect(await Bun.file(join(root, 'dist/.watch.lock')).exists()).toBe(false);
+    await first.waitFor('fixture-child-pid:');
+    buildPid = Number(first.output().match(/fixture-child-pid:(\d+)/)?.[1]);
+    expect(Number.isInteger(buildPid) && buildPid > 0).toBe(true);
+    expect(await Bun.file(join(root, 'dist/.watch.lock')).json()).toMatchObject({ buildPid });
+    expect(await first.stop('SIGKILL')).not.toBe(0);
+    const deadline = Date.now() + 3000;
+    while (true) {
+      try {
+        process.kill(buildPid, 0);
+      } catch {
+        break;
+      }
+      if (Date.now() >= deadline) throw new Error(`Orphaned Vite process ${buildPid} did not exit`);
+      await Bun.sleep(25);
+    }
+    await Bun.write(configPath, config);
+    restarted = startWatcher(root);
+    await restarted.waitFor('[watch] ready');
   } finally {
-    await watcher.stop();
+    await first.stop();
+    if (restarted) expect(await restarted.stop()).toBe(0);
+    if (buildPid !== undefined && Number.isInteger(buildPid) && buildPid > 0) {
+      try {
+        process.kill(buildPid, 9);
+      } catch {
+        // The normal path has already observed the orphan exit.
+      }
+    }
+    expect(await Bun.file(join(root, 'dist/.watch.lock')).exists()).toBe(false);
     await rm(root, { recursive: true, force: true });
   }
 }, 30000);

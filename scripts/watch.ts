@@ -1,6 +1,7 @@
-import { mkdir, open, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { acquireWatchLock } from './watchLock';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const targets = ['extension', 'webview'] as const;
@@ -28,8 +29,9 @@ function shutdown(): void {
   }
 }
 
-process.once('SIGINT', shutdown);
-process.once('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+process.on('SIGHUP', shutdown);
 
 // Poll a small source tree. Native fs.watch/Rolldown watchers are unreliable on
 // mounted/network volumes; this detects new files and atomic editor saves too.
@@ -78,6 +80,7 @@ async function build(target: Target): Promise<void> {
   const child = Bun.spawn(
     [
       'node',
+      join(projectRoot, 'scripts/watchBuild.mjs'),
       join(targetRoot, 'node_modules/vite/bin/vite.js'),
       'build',
       '--config',
@@ -85,31 +88,36 @@ async function build(target: Target): Promise<void> {
       '--mode',
       'development',
     ],
-    { cwd: targetRoot, stdout: 'inherit', stderr: 'inherit' },
+    { cwd: targetRoot, stdin: 'pipe', stdout: 'inherit', stderr: 'inherit' },
   );
   activeBuild = child;
   try {
+    await lock.setBuild(child.pid);
+    if (stopping) child.kill();
+    else {
+      child.stdin.write('start\n');
+      await child.stdin.flush();
+    }
     const exitCode = await child.exited;
     if (stopping) return;
     if (exitCode !== 0) throw new Error(`${target} build failed (exit ${exitCode})`);
     console.log(`[watch] built ${target}`);
   } finally {
+    if (child.exitCode === null) {
+      child.kill();
+      await child.exited;
+    }
+    child.stdin.end();
     activeBuild = undefined;
+    await lock.setBuild(undefined);
   }
 }
 
 await mkdir(join(projectRoot, 'dist'), { recursive: true });
 const lockPath = join(projectRoot, 'dist/.watch.lock');
-const lock = await open(lockPath, 'wx').catch((error: unknown) => {
-  throw new Error(
-    'Cannot start dev. Terminate the existing dev task first. If it was force-killed, ' +
-      'confirm it has stopped before removing dist/.watch.lock.',
-    { cause: error },
-  );
-});
+const lock = await acquireWatchLock(lockPath);
 
 try {
-  await lock.writeFile(String(process.pid));
   console.log('[watch] starting');
   const previous: Partial<Record<Target, string>> = {};
   const failed: Partial<Record<Target, string>> = {};
@@ -153,6 +161,5 @@ try {
   }
 } finally {
   if (killTimeout) clearTimeout(killTimeout);
-  await lock.close();
-  await rm(lockPath, { force: true });
+  await lock.release();
 }

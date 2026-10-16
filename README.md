@@ -45,7 +45,7 @@ code .
 
 修改 React、CSS、Shared 后，构建自动更新，点击视图标题栏 **Reload Webview**（重启图标）加载新 UI；修改 Extension 后重启 F5 调试会话加载新 Host 代码。这里采用监听构建与手动重载，没有 HMR。需要实时类型诊断时另外运行 `bun run typecheck:watch`。
 
-F5 结束后，开发任务可能继续监听；可通过 `Tasks: Terminate Task` 结束 `dev`，终止构建子进程并释放监听锁。生产构建、测试、清理或打包前先结束 `dev`，避免其他命令同时写入产物。重复启动 `dev` 会被拒绝；若进程被强制杀死，确认旧进程已退出后删除 `dist/.watch.lock` 再启动。若 VS Code 找不到 Bun，请确保其终端 PATH 包含 Bun 的安装目录，然后重新启动 VS Code。
+F5 结束后，开发任务可能继续监听；可通过 `Tasks: Terminate Task` 结束 `dev`，终止构建子进程并释放监听锁。`SIGINT`、`SIGTERM` 和关闭终端时的 `SIGHUP` 都会执行清理。构建子进程通过专用管道等待 watcher 放行；watcher 被强杀时，管道关闭也会终止该构建，下一次启动会确认 watcher 和已记录的构建进程都退出后再回收旧锁。生产构建、测试、清理或打包前先结束 `dev`，避免其他命令同时写入产物。重复启动 `dev` 会报告仍存活的持有进程 PID；强制杀死进程留下的锁会在下次启动时自动回收，并发启动也只允许一个任务持锁。无法读取持有者的损坏锁不会自动删除，应先确认没有运行中的开发任务再处理。若 VS Code 找不到 Bun，请确保其终端 PATH 包含 Bun 的安装目录，然后重新启动 VS Code。
 
 ## 提交规范与 CI
 
