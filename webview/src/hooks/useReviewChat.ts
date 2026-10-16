@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useChat } from '@ai-sdk/react';
+import type { ThreadSuggestion } from '@assistant-ui/react';
 import { AssistantChatTransport, useAISDKRuntime } from '@assistant-ui/ai-sdk';
 import type { ReviewChatMessage } from '@shared/chat';
 import type { ChatMessage, ReviewTab } from '@shared/models';
@@ -14,6 +15,32 @@ const convertMessage = (message: ChatMessage): ReviewChatMessage => ({
   role: message.role,
   parts: [{ type: 'text', text: message.text }],
 });
+
+/**
+ * Start-page prompts, rendered by the Thread element's welcome list (title +
+ * label per row). The whole `prompt` is sent when a row is chosen. Only fed to
+ * the runtime while the conversation is empty, so the follow-up row stays
+ * reserved for suggestions generated from a reply.
+ */
+const START_SUGGESTIONS: readonly ThreadSuggestion[] = [
+  {
+    title: '审查当前工作区的改动',
+    label: '找出潜在问题',
+    prompt: '审查当前工作区的改动，找出潜在问题',
+  },
+  {
+    title: '总结这次改动',
+    label: '内容、影响面与风险',
+    prompt: '总结这次改动的内容、影响面与风险',
+  },
+  {
+    title: '检查边界情况',
+    label: '与测试覆盖的遗漏',
+    prompt: '检查边界情况与测试覆盖是否有遗漏',
+  },
+];
+
+const NO_SUGGESTIONS: readonly ThreadSuggestion[] = [];
 
 export function useReviewChat(connection: {
   model: string;
@@ -194,6 +221,7 @@ export function useReviewChat(connection: {
   // The Bridge accepts text turns; do not offer the SDK's default file uploads.
   const runtime = useAISDKRuntime(chat, {
     isSendDisabled: !connection.modelsReady,
+    suggestions: chat.messages.length === 0 ? START_SUGGESTIONS : NO_SUGGESTIONS,
     adapters: { attachments: undefined },
   });
   const lastMessages = useRef({ sessionId: session.id, messages: chat.messages });

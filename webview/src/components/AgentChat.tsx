@@ -1,17 +1,11 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
-import { ActionBarPrimitive, useAui, useAuiState } from '@assistant-ui/react';
+import { ActionBarPrimitive, useAuiState } from '@assistant-ui/react';
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
 import type { GitRepositoryInfo, PanelSnapshot } from '@shared/models';
 import { ReviewGitContext } from './GitStatusLine';
 import { Icon } from './Icon';
 import { Thread, type ThreadComponents } from './assistant-ui/elements/thread.aui';
-import {
-  EmptyState,
-  EmptyStateGreeting,
-  EmptyStateSuggestion,
-  EmptyStateSuggestions,
-} from './assistant-ui/elements/empty-state';
 import { MarkdownText } from './assistant-ui/elements/markdown-text';
 import { cn } from '../lib/utils';
 import { isFileReferenceId } from '@shared/protocol';
@@ -183,32 +177,6 @@ function CopyResponse() {
   );
 }
 
-const INITIAL_PROMPTS = [
-  '审查当前工作区的改动，找出潜在问题',
-  '总结这次改动的内容与风险点',
-  '检查边界情况和测试是否有遗漏',
-];
-
-function ReviewWelcome() {
-  const aui = useAui();
-  return (
-    <EmptyState className="mx-auto mb-6 px-2">
-      <EmptyStateGreeting>你好，今天想审查什么？</EmptyStateGreeting>
-      <EmptyStateSuggestions>
-        {INITIAL_PROMPTS.map((prompt, index) => (
-          <EmptyStateSuggestion
-            key={prompt}
-            index={index}
-            onClick={() => aui.thread.append(prompt)}
-          >
-            {prompt}
-          </EmptyStateSuggestion>
-        ))}
-      </EmptyStateSuggestions>
-    </EmptyState>
-  );
-}
-
 function ReviewAssistantActionBar() {
   return (
     <ActionBarPrimitive.Root hideWhenRunning autohide="never">
@@ -220,7 +188,6 @@ function ReviewAssistantActionBar() {
 // The Host stores an append-only conversation, so editing and regeneration
 // are not exposed until the Bridge supports replacing the remote history.
 const THREAD_COMPONENTS: ThreadComponents = {
-  Welcome: ReviewWelcome,
   Text: ReviewMarkdownText,
   ComposerInput: ReviewComposerInput,
   ComposerFooter: ReviewComposerFooter,
