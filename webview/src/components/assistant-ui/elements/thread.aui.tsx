@@ -20,6 +20,7 @@ import { ToolFallback } from '@/components/assistant-ui/elements/tool-fallback.a
 import { ToolCallTimelineGroup } from '@/components/assistant-ui/elements/tool-timeline.aui';
 import { TooltipIconButton } from '@/components/assistant-ui/elements/tooltip-icon-button';
 import { Button } from '@/components/ui/button';
+import { Icon } from '@/components/Icon';
 import { Skeleton } from '@/components/ui/skeleton';
 import { cn } from '@/lib/utils';
 import { ownsItsUi } from '@/components/assistant-ui/utils/tool-timeline';
@@ -451,9 +452,12 @@ const ThreadScrollToBottom: FC = () => {
 const ThreadWelcome: FC = () => {
   return (
     <div className="aui-thread-welcome-root mb-6 flex flex-col px-2">
-      <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-medium tracking-tight duration-200">
-        How can I help you today?
-      </p>
+      <div data-slot="thread-welcome-greeting" className="flex items-start gap-2.5">
+        <Icon name="review" className="mt-1 size-6 text-link" />
+        <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-2xl font-medium tracking-tight duration-200">
+          How can I help you today?
+        </p>
+      </div>
     </div>
   );
 };

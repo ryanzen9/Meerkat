@@ -3,7 +3,7 @@ import { changeCounts } from '@shared/git';
 import { AgentChat, ChatActionsContext, reviewToolConfig } from './components/AgentChat';
 import { FileChanges } from './components/FileChanges';
 import { ReviewContext } from './components/ReviewContext';
-import { ReviewHeader } from './components/ReviewHeader';
+import { ReviewActions } from './components/ReviewActions';
 import { ReviewTabs } from './components/ReviewTabs';
 import { SessionHistory } from './components/SessionHistory';
 import { usePanel } from './hooks/usePanel';
@@ -32,88 +32,47 @@ export function App() {
           className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
           aria-label="Meerkat 面板"
         >
-          <ReviewHeader
-            refreshing={panel.refreshing}
-            canExport={chat.session.messages.length > 0}
-            onRefresh={() => {
-              void panel.refresh();
-            }}
-            onSettings={() => {
-              void panel.openSettings().catch(() => {});
-            }}
-            onHistory={() => chat.setTab('history')}
-            onExport={() => {
-              void panel.openCode(chat.exportMarkdown(), 'markdown').catch(() => {});
-            }}
-          />
-          <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-widget px-3 py-2 text-[0.8rem]">
-              {connection.authenticated ? (
-                <>
-                  <span className="max-w-40 truncate" title={connection.activeAccountId}>
-                    {connection.accounts.find((a) => a.id === connection.activeAccountId)?.email ??
-                      'ChatGPT'}
-                  </span>
-                  <button
-                    type="button"
-                    className="text-link"
-                    onClick={() => {
-                      void connection.logout();
-                    }}
-                  >
-                    登出
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className="rounded-sm bg-button px-2 py-1 text-button-foreground"
-                  disabled={connection.waiting}
-                  onClick={() => {
-                    void connection.login(connection.accounts[0]?.id);
-                  }}
-                >
-                  {connection.waiting ? '等待浏览器授权…' : 'Continue with ChatGPT'}
-                </button>
-              )}
-              <button
-                type="button"
-                className="text-link"
-                disabled={chat.isRunning || connection.waiting}
-                onClick={() => {
-                  void connection.login();
-                  chat.newSession();
-                }}
-              >
-                添加账户
-              </button>
-              {connection.accounts.length > 1 && (
-                <select
-                  aria-label="切换 ChatGPT 账户"
-                  value={connection.activeAccountId ?? ''}
-                  disabled={chat.isRunning}
-                  className="min-w-0 bg-input text-input-foreground"
-                  onChange={(event) => {
-                    void connection.login(event.target.value);
-                    chat.newSession();
-                  }}
-                >
-                  <option value="" disabled>
-                    选择账户
-                  </option>
-                  {connection.accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.email ?? account.subject} · {account.id.slice(0, 8)}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </div>
+          <div className="flex h-10 shrink-0 items-stretch border-b border-widget px-2">
             <ReviewTabs
               activeTab={chat.activeTab}
               fileCount={changeCounts(repository).total}
               onChange={chat.setTab}
             />
+            <ReviewActions
+              refreshing={panel.refreshing}
+              canExport={chat.session.messages.length > 0}
+              authenticated={connection.authenticated}
+              activeAccountId={connection.activeAccountId}
+              accounts={connection.accounts}
+              waiting={connection.waiting}
+              chatRunning={chat.isRunning}
+              onRefresh={() => {
+                void panel.refresh();
+              }}
+              onSettings={() => {
+                void panel.openSettings().catch(() => {});
+              }}
+              onHistory={() => chat.setTab('history')}
+              onExport={() => {
+                void panel.openCode(chat.exportMarkdown(), 'markdown').catch(() => {});
+              }}
+              onLogin={() => {
+                void connection.login(connection.accounts[0]?.id);
+              }}
+              onLogout={() => {
+                void connection.logout();
+              }}
+              onAddAccount={() => {
+                void connection.login();
+                chat.newSession();
+              }}
+              onAccountChange={(accountId) => {
+                void connection.login(accountId);
+                chat.newSession();
+              }}
+            />
+          </div>
+          <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
             {panel.error && (
               <p
                 role="alert"

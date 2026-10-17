@@ -36,11 +36,7 @@ export function ReviewTabs({
     document.getElementById(`tab-${next.id}`)?.focus();
   };
   return (
-    <div
-      className="flex h-10 shrink-0 items-stretch border-b border-widget px-2"
-      role="tablist"
-      aria-label="Review 内容"
-    >
+    <div className="flex min-w-0 flex-1 items-stretch" role="tablist" aria-label="Review 内容">
       {tabs.map((tab, index) => (
         <button
           key={tab.id}

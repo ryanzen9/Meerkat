@@ -121,12 +121,12 @@ HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview
 
 ## WebView 布局与交互
 
-面板采用全高布局：44px Header、账户 / 状态行、40px 标签栏、可滚动内容和固定的底部输入区（输入框 + 单行 Git 摘要 + 提示行）。输入支持 Enter 发送、Shift+Enter 换行，以及中文输入法；多行内容在 36–48px 内自适应增长，超出后在输入框内滚动。滚动内容和长代码块不会移动 Header 或输入区，也不会撑宽侧栏。
+面板采用全高布局：40px 标签与操作栏（Chat / Files / History，右侧为刷新和设置菜单）、可滚动内容和固定的底部输入区（输入框 + 单行 Git 摘要 + 提示行）。ChatGPT 账户与授权操作收纳在设置菜单中。输入支持 Enter 发送、Shift+Enter 换行，以及中文输入法；多行内容在 36–48px 内自适应增长，超出后在输入框内滚动。滚动内容和长代码块不会移动操作栏或输入区，也不会撑宽侧栏。
 
 - **Chat**（默认）：基于 `assistant-ui` 的 `AssistantRuntimeProvider`、AI SDK Runtime、Host Stream 代理和 Thread primitives；消息布局采用官方 `elements-message-pair` 的 Runtime 方案：用户消息为右侧圆角气泡，助手回复为无气泡正文，悬停或键盘聚焦显示回复复制按钮。通过 Extension Host 复制完整回复；支持真实流式文本及工具调用时间线（`elements-tool-timeline`：一段相邻调用汇总为动词、目标与文件增删统计），当前不提供重生成。消息支持安全 Markdown、可横向滚动的代码块、复制和在编辑器打开代码。文件引用采用 `[文件名](review-file:编码后的文件URI)`，点击后由 Host 检查工作区范围再打开。输入框下方以单行显示 Git 分支、Git 状态和新增 / 修改 / 删除数量，超出宽度时截断分支名。
 - **Files**：顶部是工作区上下文面板（摘要行：仓库名 / 多仓库下拉 + Idle / Analyzing… / Issues / Ready 徽章；详情行：分支 + Git 状态 + 变更数量，可点击收起），下面按 Changes / Staged Changes 显示当前仓库未暂存、已暂存的真实 Git 变更，包含未跟踪文件和冲突。两组标题行都可点击收起 / 展开；每个文件占一行（文件名 + 灰色目录 + A / M / R / D / U 标记），新增 / 修改（含重命名）/ 删除使用 Git 主题颜色。仓库、分支、暂存或工作树变化会自动同步；多仓库可在上下文面板切换。顶部数量按文件 URI 去重，避免重复计算部分暂存的文件。
 - **History**：恢复已有会话并回到 Chat；输入区的加号新建会话。草稿、选中标签、仓库和最近 20 个会话（每个最多 100 条消息）通过 VS Code Webview state 保存，输入上限 4000 字符。
-- **更多操作**：打开扩展设置、会话历史或将当前会话作为未保存的 Markdown 文档打开，可自行保存导出。
+- **设置菜单**：管理 ChatGPT 账户（登录、登出、添加或切换账户），并可打开扩展设置、会话历史或将当前会话作为未保存的 Markdown 文档打开并导出。
 
 **已接入 ChatGPT OAuth 与 Vercel AI SDK ToolLoopAgent。** 点击 Continue with ChatGPT 完成动态注册，选择账户可用模型后发送消息，支持真实流式文本、本地 Function Tool、多轮会话和停止运行。webview 通过 Host 代理消费官方 AI SDK UI Message Stream，不持有 Provider 或本地 HTTP 凭据。PR 服务仍未接入。完整架构、HTTP API、首次授权与真实账户验收见 [Agent Bridge 文档](docs/agent-bridge.md)。Host 重启后须新建 Agent 会话；现有 webview 历史保留文字摘要。可选 `PanelSnapshot.review` 元数据支持 PR 编号和 Idle / Analyzing… / Issues / Ready 徽章，仅对匹配的仓库显示；没有该元数据时使用真实工作区名和 Idle 状态。
 

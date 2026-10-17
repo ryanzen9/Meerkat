@@ -409,6 +409,9 @@ afterAll(async () => {
 
 const mount = () => render(createElement(StrictMode, null, createElement(App)));
 type View = ReturnType<typeof mount>;
+function openSettingsMenu(view: View) {
+  fireEvent.click(view.getByRole('button', { name: '设置菜单' }));
+}
 
 test('Webview transport resets inactivity on each response chunk', async () => {
   const { createBridgeFetch } = await import('../src/services/bridgeFetch');
@@ -462,6 +465,48 @@ async function connected(view: View) {
     ).toBe(false),
   );
 }
+
+test('actions sit beside the tabs, with the mark leading the greeting and accounts in settings', async () => {
+  const view = mount();
+  await connected(view);
+
+  expect(view.queryByRole('heading', { name: 'Meerkat' })).toBeNull();
+  expect(view.getByRole('button', { name: '刷新工作区' })).toBeDefined();
+  const tablist = view.getByRole('tablist');
+  expect(tablist.contains(view.getByRole('button', { name: '设置菜单' }))).toBe(false);
+  const greeting = view.container.querySelector('[data-slot="thread-welcome-greeting"]')!;
+  expect(greeting.firstElementChild?.tagName.toLowerCase()).toBe('svg');
+  expect(greeting.lastElementChild?.textContent).toContain('How can I help you today?');
+  expect(view.queryByRole('button', { name: '登出' })).toBeNull();
+
+  openSettingsMenu(view);
+  expect(view.getByRole('button', { name: '登出' })).toBeDefined();
+  expect(view.getByRole('button', { name: '添加账户' })).toBeDefined();
+  expect(view.getByRole('button', { name: '扩展设置…' })).toBeDefined();
+});
+
+test('settings menu keeps the account picker available while logged out', async () => {
+  host.status = {
+    authenticated: false,
+    accounts: [
+      { id: 'account-a', email: 'a@example.com', subject: 'subject-a', signedIn: false },
+      { id: 'account-b', email: 'b@example.com', subject: 'subject-b', signedIn: false },
+    ],
+  };
+  const view = mount();
+  openSettingsMenu(view);
+  const picker = (await view.findByRole('combobox', {
+    name: '切换 ChatGPT 账户',
+  })) as HTMLSelectElement;
+  expect(picker.options).toHaveLength(3);
+
+  fireEvent.change(picker, { target: { value: 'account-b' } });
+  await waitFor(() => expect(host.status.signInPending).toBe(true));
+  expect(
+    (view.getByRole('button', { name: '等待浏览器授权…' }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+});
+
 async function chooseModel(view: View, name: string) {
   fireEvent.click(view.getByRole('combobox', { name: '选择 AI 模型' }));
   fireEvent.click(await view.findByRole('option', { name }));
@@ -591,6 +636,7 @@ test('a late model catalog cannot restore readiness after logout', async () => {
   });
   const view = mount();
   await waitFor(() => expect(host.modelRequests).toBeGreaterThan(0));
+  openSettingsMenu(view);
   fireEvent.click(view.getByRole('button', { name: '登出' }));
   await waitFor(() =>
     expect(view.getByRole('button', { name: 'Continue with ChatGPT' })).toBeDefined(),
@@ -1627,6 +1673,7 @@ for (const message of [
   test(`ended sign-in re-enables retry and displays ${message}`, async () => {
     host.status = { authenticated: false, signInPending: false, accounts: [] };
     const view = mount();
+    openSettingsMenu(view);
     fireEvent.click(view.getByRole('button', { name: 'Continue with ChatGPT' }));
     await waitFor(() =>
       expect(
@@ -1652,6 +1699,7 @@ for (const message of [
 test('failed account switch keeps the active account and releases the Add account button', async () => {
   const view = mount();
   await connected(view);
+  openSettingsMenu(view);
   fireEvent.click(view.getByRole('button', { name: '添加账户' }));
   await waitFor(() =>
     expect((view.getByRole('button', { name: '添加账户' }) as HTMLButtonElement).disabled).toBe(
@@ -1674,6 +1722,7 @@ test('failed account switch keeps the active account and releases the Add accoun
 test('completed authorization releases waiting even when the model catalog fails', async () => {
   host.status = { authenticated: false, signInPending: false, accounts: [] };
   const view = mount();
+  openSettingsMenu(view);
   fireEvent.click(view.getByRole('button', { name: 'Continue with ChatGPT' }));
   await waitFor(() => expect(host.status.signInPending).toBe(true));
   host.status.authenticated = true;
