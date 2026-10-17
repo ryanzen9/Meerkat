@@ -6,11 +6,16 @@ import type { FileReference } from '../bridge/tools/reviewWorkspace';
 import { BridgeError } from '../bridge/errors';
 import { inside } from '../bridge/tools/reviewGit';
 import { isFileReferenceId } from '../../shared/protocol';
+import type { ReviewFinding } from '../../shared/review';
 
 const SNAPSHOT_SCHEME = 'meerkat-review';
 
 export class ReferenceEditorService implements vscode.Disposable {
   private readonly registration: vscode.Disposable;
+  private controller: vscode.CommentController | undefined;
+  private readonly threads = new Map<string, vscode.CommentThread>();
+  private editorColumn: vscode.ViewColumn | undefined;
+  private disposed = false;
 
   constructor(private readonly bridge: Pick<BridgeService, 'readFileReference'>) {
     this.registration = vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, {
@@ -29,7 +34,12 @@ export class ReferenceEditorService implements vscode.Disposable {
   }
 
   async open(sessionId: string, referenceId: string): Promise<void> {
-    const { reference, content } = await this.bridge.readFileReference(sessionId, referenceId);
+    this.assertOpen();
+    const { reference, content, findings } = await this.bridge.readFileReference(
+      sessionId,
+      referenceId,
+    );
+    this.assertOpen();
     const fileUri = vscode.Uri.file(resolve(reference.repository, reference.path));
     if (!vscode.workspace.getWorkspaceFolder(fileUri))
       throw new BridgeError('repository_unavailable', 'Reference is outside the workspace.');
@@ -37,13 +47,7 @@ export class ReferenceEditorService implements vscode.Disposable {
       reference.version === 'new'
         ? await this.currentDocument(fileUri, reference, content)
         : undefined;
-    document ??= await vscode.workspace.openTextDocument(
-      vscode.Uri.from({
-        scheme: SNAPSHOT_SCHEME,
-        path: `/${reference.version}/${reference.path}`,
-        query: new URLSearchParams({ sessionId, referenceId }).toString(),
-      }),
-    );
+    document ??= await vscode.workspace.openTextDocument(this.snapshotUri(sessionId, reference));
     let selection: vscode.Range | undefined;
     if (reference.scope !== 'file') {
       if (reference.endLine > document.lineCount)
@@ -55,14 +59,95 @@ export class ReferenceEditorService implements vscode.Disposable {
         document.lineAt(reference.endLine - 1).text.length,
       );
     }
+    this.assertOpen();
     const editor = await vscode.window.showTextDocument(document, {
-      viewColumn: vscode.ViewColumn.Active,
+      viewColumn: findings.length
+        ? (this.editorColumn ?? vscode.ViewColumn.Beside)
+        : vscode.ViewColumn.Active,
       preview: true,
       preserveFocus: false,
       ...(selection ? { selection } : {}),
     });
     if (selection)
       editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    this.assertOpen();
+    if (findings.length) {
+      this.editorColumn = editor.viewColumn;
+      this.showFindings(sessionId, referenceId, document.uri, selection, findings);
+    }
+  }
+
+  private snapshotUri(sessionId: string, reference: FileReference): vscode.Uri {
+    return vscode.Uri.from({
+      scheme: SNAPSHOT_SCHEME,
+      path: `/${reference.version}/${reference.path}`,
+      query: new URLSearchParams({ sessionId, referenceId: reference.referenceId }).toString(),
+    });
+  }
+
+  private showFindings(
+    sessionId: string,
+    referenceId: string,
+    uri: vscode.Uri,
+    range: vscode.Range | undefined,
+    findings: readonly ReviewFinding[],
+  ): void {
+    this.controller ??= vscode.comments.createCommentController('meerkat.review', 'Meerkat 审查');
+    for (const finding of findings) {
+      const key = JSON.stringify([sessionId, finding.id, referenceId]);
+      let thread = this.threads.get(key);
+      // When the live file changes, move the receipt to its exact snapshot.
+      if (thread && thread.uri.toString() !== uri.toString()) {
+        thread.dispose();
+        this.threads.delete(key);
+        thread = undefined;
+      }
+      if (!thread) {
+        const body = new vscode.MarkdownString();
+        body.isTrusted = false;
+        body.supportHtml = false;
+        body.appendText(`[${finding.priority}] ${finding.title}`);
+        body.appendMarkdown('\n\n');
+        body.appendMarkdown(
+          finding.description.replace(/\]\(review-file:([^\s)]+)\)/g, (_match, target: string) => {
+            let id: string;
+            try {
+              id = decodeURIComponent(target);
+            } catch {
+              return ']()';
+            }
+            const reference = finding.references.find((item) => item.referenceId === id);
+            if (!reference) return ']()';
+            const targetUri = id === referenceId ? uri : this.snapshotUri(sessionId, reference);
+            const fragment =
+              reference.scope === 'range' ? `#L${reference.startLine}-L${reference.endLine}` : '';
+            return `](<${targetUri.toString()}${fragment}>)`;
+          }),
+        );
+        thread = this.controller.createCommentThread(
+          uri,
+          // Findings currently require ranges; keep a file-level anchor for compatibility.
+          range ?? new vscode.Range(0, 0, 0, 0),
+          [
+            {
+              body,
+              author: { name: 'Meerkat' },
+              mode: vscode.CommentMode.Preview,
+              timestamp: new Date(finding.savedAt),
+            },
+          ],
+        );
+        thread.canReply = false;
+        thread.label = `[${finding.priority}] ${finding.title}`;
+        this.threads.set(key, thread);
+      }
+      thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    }
+  }
+
+  private assertOpen(): void {
+    if (this.disposed)
+      throw new BridgeError('bridge_closed', 'Reference editor has been disposed.');
   }
 
   private async currentDocument(
@@ -87,6 +172,10 @@ export class ReferenceEditorService implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.disposed = true;
+    for (const thread of this.threads.values()) thread.dispose();
+    this.threads.clear();
+    this.controller?.dispose();
     this.registration.dispose();
   }
 }

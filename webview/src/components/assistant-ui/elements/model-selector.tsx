@@ -230,6 +230,8 @@ export type ModelSelectorContentProps = Omit<
    */
   side?: ComponentPropsWithoutRef<typeof PopoverContent>['side'];
   searchable?: boolean;
+  /** Accessible name when the props-driven selector presents another choice. */
+  label?: string;
 };
 
 /**
@@ -237,10 +239,10 @@ export type ModelSelectorContentProps = Omit<
  * keyboard-operable without a visible search box. ModelSelectorContent renders
  * one automatically when unfiltered.
  */
-function ModelSelectorFocusAnchor() {
+function ModelSelectorFocusAnchor({ label = '模型' }: { label?: string }) {
   return (
     <div className="sr-only">
-      <CommandInput readOnly aria-label="模型" />
+      <CommandInput readOnly aria-label={label} />
     </div>
   );
 }
@@ -251,6 +253,7 @@ function ModelSelectorContent({
   side,
   sideOffset = 6,
   searchable,
+  label,
   children,
   ...props
 }: ModelSelectorContentProps) {
@@ -272,12 +275,12 @@ function ModelSelectorContent({
       {...props}
     >
       <Command
-        label={unfiltered ? '模型' : '搜索模型'}
+        label={label ?? (unfiltered ? '模型' : '搜索模型')}
         className="bg-transparent"
         shouldFilter={!unfiltered}
         {...(value !== undefined ? { defaultValue: value } : {})}
       >
-        {unfiltered && <ModelSelectorFocusAnchor />}
+        {unfiltered && <ModelSelectorFocusAnchor {...(label ? { label } : {})} />}
         {children ?? (
           <>
             {searchable && <ModelSelectorSearch />}

@@ -54,6 +54,14 @@ export class ReviewJournal {
       findings: [...this.findings.values()],
     });
   }
+
+  findingsForReference(referenceId: string): ReviewFinding[] {
+    return structuredClone(
+      [...this.findings.values()].filter((finding) =>
+        finding.references.some((reference) => reference.referenceId === referenceId),
+      ),
+    );
+  }
 }
 
 export class ReviewRun {

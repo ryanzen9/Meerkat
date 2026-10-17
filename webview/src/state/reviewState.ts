@@ -166,7 +166,7 @@ export function sessionMarkdown(session: ChatSession): string {
       const run = session.reviews?.runs.find(({ id }) => id === reviewRunId);
       const findings =
         session.reviews?.findings.filter((finding) => finding.runId === reviewRunId) ?? [];
-      return `## Review\n\n${findings.map((finding) => `### [${finding.priority}] ${finding.title}\n\n${finding.description}\n\n${finding.references.map((ref) => ref.markdown).join(' · ')}`).join('\n\n')}\n\n${run?.summary ?? '审查未完成。'}${run?.unfinishedItems.length ? `\n\n未完成事项：\n${run.unfinishedItems.join('\n')}` : ''}${run?.limitations.length ? `\n\n审查限制：\n${run.limitations.join('\n')}` : ''}`;
+      return `## Review\n\n${findings.map((finding) => `### [${finding.priority}] ${finding.title}\n\n${finding.description}\n\n${finding.references.map((ref) => ref.markdown).join(' · ')}`).join('\n\n')}\n\n${run?.summary ?? '审查未完成。'}`;
     })
     .join('\n\n')}`;
 }

@@ -5,6 +5,7 @@ import { rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { reviewFixture } from './reviewFixture';
 import { BridgeError } from '../src/extension/bridge/errors';
+import { ReviewJournal } from '../src/extension/bridge/sessions/reviews';
 
 const nativeCalls: { action: string; value: unknown }[] = [];
 let gitExtension: unknown;
@@ -85,6 +86,10 @@ mock.module('vscode', () => ({
       nativeCalls.push({ action: 'editor', value });
       nativeCalls.push({ action: 'editor-options', value: options });
       return {
+        viewColumn:
+          (options as vscode.TextDocumentShowOptions).viewColumn === -2
+            ? 2
+            : ((options as vscode.TextDocumentShowOptions).viewColumn ?? 1),
         revealRange: (...args: unknown[]) => nativeCalls.push({ action: 'reveal', value: args }),
       };
     },
@@ -103,7 +108,52 @@ mock.module('vscode', () => ({
   },
   extensions: { getExtension: () => gitExtension },
   languages: { getDiagnostics: () => editorDiagnostics },
-  ViewColumn: { Active: -1 },
+  comments: {
+    createCommentController: (id: string, label: string) => {
+      const threads: { disposed: boolean }[] = [];
+      const controller = {
+        id,
+        label,
+        disposed: false,
+        createCommentThread: (uri: vscode.Uri, range: vscode.Range, comments: vscode.Comment[]) => {
+          const thread = {
+            uri,
+            range,
+            comments,
+            canReply: true,
+            collapsibleState: 0,
+            disposed: false,
+            dispose() {
+              this.disposed = true;
+            },
+          };
+          threads.push(thread);
+          nativeCalls.push({ action: 'comment-thread', value: thread });
+          return thread;
+        },
+        dispose() {
+          this.disposed = true;
+          for (const thread of threads) thread.disposed = true;
+        },
+      };
+      nativeCalls.push({ action: 'comment-controller', value: controller });
+      return controller;
+    },
+  },
+  MarkdownString: class {
+    value = '';
+    appendText(value: string) {
+      this.value += value;
+      return this;
+    }
+    appendMarkdown(value: string) {
+      this.value += value;
+      return this;
+    }
+  },
+  CommentMode: { Preview: 1 },
+  CommentThreadCollapsibleState: { Collapsed: 0, Expanded: 1 },
+  ViewColumn: { Active: -1, Beside: -2 },
   TextEditorRevealType: { InCenterIfOutsideViewport: 3 },
   Range: class {
     readonly start: { line: number; character: number };
@@ -328,7 +378,7 @@ test('reference clicks resolve the session region, open the live file, select in
   const navigation = new ReferenceEditorService({
     readFileReference: async (sessionId, referenceId) => {
       expect(sessionId).toBe('host-session');
-      return f.context.readFileReference(referenceId);
+      return { ...(await f.context.readFileReference(referenceId)), findings: [] };
     },
   });
   const provider = new ReviewPanelProvider(
@@ -394,7 +444,10 @@ test('whole-file references open live and snapshot documents, including empty fi
   fileDocuments.set(emptyUri.toString(), textDocument(emptyUri, ''));
   navigationRoot = f.root;
   const navigation = new ReferenceEditorService({
-    readFileReference: (_sessionId, referenceId) => f.context.readFileReference(referenceId),
+    readFileReference: async (_sessionId, referenceId) => ({
+      ...(await f.context.readFileReference(referenceId)),
+      findings: [],
+    }),
   });
   try {
     for (const scenario of ['live', 'old', 'edited', 'empty'] as const) {
@@ -424,6 +477,131 @@ test('whole-file references open live and snapshot documents, including empty fi
   }
 });
 
+test('saved review references open beside the chat and show deduplicated native comments on the exact code', async () => {
+  const content = 'one\nunchecked\nthree\n';
+  const f = await reviewFixture();
+  await f.write('file.ts', content);
+  const journal = new ReviewJournal();
+  const run = journal.start(crypto.randomUUID(), crypto.randomUUID(), 'Review', f.context);
+  const { reviewId } = await run.track('list_changes', () =>
+    f.context.listChanges({ scope: 'all' }),
+  );
+  await run.track('get_diff', () => f.context.getDiff({ reviewId, paths: ['file.ts'] }));
+  const references = (
+    await f.context.citeFiles({
+      reviewId,
+      references: [
+        { path: 'file.ts', version: 'new', startLine: 2, endLine: 2 },
+        { path: 'file.ts', version: 'old', startLine: 1, endLine: 1 },
+      ],
+    })
+  ).references;
+  const input = {
+    reviewId,
+    title: 'Missing validation',
+    priority: 'P1' as const,
+    description: `Validate the \`value\` in ${references[0]!.markdown}.`,
+    referenceIds: references.map(({ referenceId }) => referenceId),
+  };
+  const receipt = await run.submit(input, 'original');
+  await run.submit(input, 'duplicate');
+  run.finish({ status: 'completed', unfinishedItems: [], limitations: [] });
+  run.settle('completed');
+  const bridge = {
+    readFileReference: async (sessionId: string, referenceId: string) => {
+      expect(sessionId).toBe(run.state.sessionId);
+      return {
+        ...(await f.context.readFileReference(referenceId)),
+        findings: journal.findingsForReference(referenceId),
+      };
+    },
+  };
+  const fileUri = localUri(join(f.root, 'file.ts')) as vscode.Uri;
+  fileDocuments.set(fileUri.toString(), textDocument(fileUri, content));
+  navigationRoot = f.root;
+  let navigation = new ReferenceEditorService(bridge);
+  nativeCalls.length = 0;
+  const createdThreads = () =>
+    nativeCalls
+      .filter(({ action }) => action === 'comment-thread')
+      .map(({ value }) => value as vscode.CommentThread & { disposed: boolean });
+  try {
+    await navigation.open(run.state.sessionId, references[0]!.referenceId);
+    expect(nativeCalls.find(({ action }) => action === 'editor-options')!.value).toMatchObject({
+      viewColumn: -2,
+      preserveFocus: false,
+      selection: { start: { line: 1, character: 0 }, end: { line: 1, character: 9 } },
+    });
+    const thread = createdThreads()[0]!;
+    expect(thread.uri.toString()).toBe(fileUri.toString());
+    expect(thread.range).toMatchObject({
+      start: { line: 1, character: 0 },
+      end: { line: 1, character: 9 },
+    });
+    expect(thread.label).toBe('[P1] Missing validation');
+    expect(thread.canReply).toBe(false);
+    expect(thread.collapsibleState).toBe(1);
+    expect(thread.comments).toHaveLength(1);
+    expect(thread.comments[0]).toMatchObject({
+      author: { name: 'Meerkat' },
+      mode: 1,
+      timestamp: new Date(receipt.finding.savedAt),
+    });
+    const body = thread.comments[0]!.body as vscode.MarkdownString;
+    expect(body.value).toContain('Validate the `value`');
+    expect(body.value).toContain(`${fileUri.toString()}#L2-L2`);
+    expect(body.value).not.toContain('review-file:');
+    expect(body.isTrusted).toBe(false);
+    expect(body.supportHtml).toBe(false);
+    thread.collapsibleState = 0;
+    await Promise.all([
+      navigation.open(run.state.sessionId, references[0]!.referenceId),
+      navigation.open(run.state.sessionId, references[0]!.referenceId),
+    ]);
+    expect(createdThreads()).toHaveLength(1);
+    expect(createdThreads()[0]!.collapsibleState).toBe(1);
+    expect(
+      nativeCalls.filter(({ action }) => action === 'editor-options').at(-1)!.value,
+    ).toMatchObject({
+      viewColumn: 2,
+    });
+
+    await f.write('file.ts', 'edited after review\n');
+    fileDocuments.set(fileUri.toString(), textDocument(fileUri, 'edited after review\n'));
+    await navigation.open(run.state.sessionId, references[0]!.referenceId);
+    expect(thread.disposed).toBe(true);
+    const snapshotThread = createdThreads().at(-1)!;
+    expect(snapshotThread.uri.scheme).toBe('meerkat-review');
+    expect(snapshotThread.uri.path).toBe('/new/file.ts');
+    expect(snapshotThread.range).toMatchObject({ start: { line: 1 }, end: { line: 1 } });
+    expect(
+      (
+        nativeCalls.filter(({ action }) => action === 'editor').at(-1)!.value as vscode.TextDocument
+      ).getText(),
+    ).toBe(content);
+    await navigation.open(run.state.sessionId, references[1]!.referenceId);
+    expect(createdThreads().at(-1)!.uri.path).toBe('/old/file.ts');
+    expect(createdThreads().at(-1)!.range.start.line).toBe(0);
+    navigation.dispose();
+    expect(createdThreads().every(({ disposed }) => disposed)).toBe(true);
+
+    // A new editor service restores annotations from receipts, never from UI text.
+    navigation = new ReferenceEditorService(bridge);
+    await navigation.open(run.state.sessionId, references[0]!.referenceId);
+    expect(createdThreads().at(-1)!.disposed).toBe(false);
+    expect(createdThreads().at(-1)!.label).toBe('[P1] Missing validation');
+    const before = createdThreads().length;
+    await expect(
+      navigation.open(run.state.sessionId, `ref_${'f'.repeat(64)}`),
+    ).rejects.toMatchObject({ code: 'reference_not_found' });
+    expect(createdThreads()).toHaveLength(before);
+  } finally {
+    navigation.dispose();
+    fileDocuments.clear();
+    navigationRoot = undefined;
+  }
+});
+
 test('old, edited, deleted and symlink-replaced files open their exact read-only snapshot regions', async () => {
   const content = 'one\ntwo\nthree\n';
   const f = await reviewFixture({ 'file.ts': content });
@@ -441,7 +619,10 @@ test('old, edited, deleted and symlink-replaced files open their exact read-only
   const fileUri = localUri(join(f.root, 'file.ts')) as vscode.Uri;
   navigationRoot = f.root;
   const navigation = new ReferenceEditorService({
-    readFileReference: (_sessionId, referenceId) => f.context.readFileReference(referenceId),
+    readFileReference: async (_sessionId, referenceId) => ({
+      ...(await f.context.readFileReference(referenceId)),
+      findings: [],
+    }),
   });
   try {
     for (const scenario of ['old', 'edited', 'deleted', 'symlink'] as const) {

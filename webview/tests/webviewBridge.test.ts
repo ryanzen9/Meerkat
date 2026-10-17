@@ -466,6 +466,47 @@ async function chooseModel(view: View, name: string) {
   fireEvent.click(view.getByRole('combobox', { name: '选择 AI 模型' }));
   fireEvent.click(await view.findByRole('option', { name }));
 }
+async function chooseMode(view: View, name: '普通聊天' | '代码审查') {
+  fireEvent.click(view.getByRole('combobox', { name: '交互模式' }));
+  fireEvent.click(await view.findByRole('option', { name: new RegExp(name) }));
+}
+
+test('Thread composer uses the selector Element for modes with keyboard navigation and independent model selection', async () => {
+  const view = mount();
+  await connected(view);
+  await chooseModel(view, 'Model B');
+  await act(async () => host.settle());
+  const trigger = view.getByRole('combobox', { name: '交互模式' });
+  expect(trigger.tagName).toBe('BUTTON');
+  expect(trigger.getAttribute('data-slot')).toBe('model-selector-trigger');
+  expect(trigger.closest('[data-slot="aui_composer-shell"]')).not.toBeNull();
+  expect(trigger.textContent).toContain('普通聊天');
+  fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
+    target: { value: 'Keep this draft while switching modes' },
+  });
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
+  const list = await view.findByRole('listbox', { name: '交互模式' });
+  expect(within(list).getAllByRole('option')).toHaveLength(2);
+  const input = list.closest('[cmdk-root]')!.querySelector('input')!;
+  expect(input.getAttribute('aria-label')).toBe('交互模式');
+  fireEvent.keyDown(input, { key: 'End' });
+  await waitFor(() =>
+    expect(list.querySelector('[data-selected="true"]')?.textContent).toContain('代码审查'),
+  );
+  fireEvent.keyDown(input, { key: 'Enter' });
+  await waitFor(() =>
+    expect(view.getByRole('combobox', { name: '交互模式' }).textContent).toContain('代码审查'),
+  );
+  expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
+    'Keep this draft while switching modes',
+  );
+  expect(view.getByRole('combobox', { name: '选择 AI 模型' }).textContent).toContain('Model B');
+  expect(host.runs).toHaveLength(0);
+  await chooseMode(view, '普通聊天');
+  await send(view, 'chat with the selected model');
+  await answered(view, 1);
+  expect(host.runs[0]!.model).toBe('model-b');
+});
 
 for (const outcome of ['available', 'empty', 'failure'] as const) {
   test(`initial model catalog ${outcome} waits before validating a restored session`, async () => {
@@ -517,8 +558,15 @@ for (const outcome of ['available', 'empty', 'failure'] as const) {
       await answered(view, 1);
       expect(host.runs[0]!.model).toBe('model-b');
     } else if (outcome === 'empty') {
-      expect(view.getByRole('alert').textContent).toContain('模型在当前账户中不可用');
+      // The selector carries the binding warning proactively; the failed send
+      // reports itself in the message it belongs to.
       expect(selector.textContent).toContain('当前账户不可用');
+      expect(view.queryByRole('alert')).toBeNull();
+      await send(view, 'blocked by the empty catalog');
+      await waitFor(() =>
+        expect(view.getByRole('alert').textContent).toContain('请先 Continue with ChatGPT'),
+      );
+      expect(host.runs).toHaveLength(0);
     } else {
       expect(view.getByRole('alert').textContent).toContain('Model catalog unavailable');
       expect(selector.textContent).not.toContain('不可用');
@@ -624,19 +672,19 @@ const reviewToolCall = (step: number, toolName: string, input: unknown): TestMod
   finishChunk('tool-calls'),
 ];
 
-function incrementalReviewContext(): ReviewContext {
+function incrementalReviewContext(path = 'file.ts'): ReviewContext {
   const reviewId = randomUUID();
   const reference = {
     referenceId: `ref_${'b'.repeat(64)}`,
     reviewId,
     repository: '/fixture',
-    path: 'file.ts',
+    path,
     version: 'new' as const,
     scope: 'range' as const,
     startLine: 2,
     endLine: 2,
-    label: 'file.ts:2',
-    markdown: `[file.ts:2](review-file:ref_${'b'.repeat(64)})`,
+    label: `${path}:2`,
+    markdown: `[${path.replace(/[[\]]/g, '\\$&')}:2](review-file:ref_${'b'.repeat(64)})`,
   };
   const context = new ReviewContext({
     getState: async () => ({
@@ -650,9 +698,9 @@ function incrementalReviewContext(): ReviewContext {
     getDiagnostics: () => [],
   });
   const change = {
-    path: 'file.ts',
-    oldPath: 'file.ts',
-    newPath: 'file.ts',
+    path,
+    oldPath: path,
+    newPath: path,
     status: 'modified' as const,
   };
   context.listChanges = async ({ scope }) => ({
@@ -689,27 +737,28 @@ function incrementalReviewContext(): ReviewContext {
   };
   return context;
 }
-for (const outcome of ['completed', 'cancelled'] as const) {
+for (const outcome of ['completed', 'incomplete', 'cancelled', 'failed'] as const) {
   test(`incremental Tool UI saves one card while running, then restores ${outcome} receipts`, async () => {
-    host.reviewContext = incrementalReviewContext();
+    const path = 'app/[locale]/projects/[slug]/page.tsx';
+    host.reviewContext = incrementalReviewContext(path);
     let calls = 0;
     host.reviewPlan = (step, prompt) => {
       calls++;
       const reviewId = /"reviewId":"([\w-]+)"/.exec(prompt)?.[1] ?? '';
       const referenceId = /ref_[a-f0-9]{64}/.exec(prompt)?.[0] ?? '';
       if (step === 1) return reviewToolCall(step, 'list_changes', { scope: 'all' });
-      if (step === 2) return reviewToolCall(step, 'get_diff', { reviewId, paths: ['file.ts'] });
+      if (step === 2) return reviewToolCall(step, 'get_diff', { reviewId, paths: [path] });
       if (step === 3)
         return reviewToolCall(step, 'cite_files', {
           reviewId,
-          references: [{ path: 'file.ts', version: 'new', startLine: 2, endLine: 2 }],
+          references: [{ path, version: 'new', startLine: 2, endLine: 2 }],
         });
       if (step === 4 || step === 5)
         return reviewToolCall(step, 'submit_review', {
           reviewId,
           title: 'Unchecked value',
           priority: 'P1',
-          description: 'The inserted value reaches the caller without validation.',
+          description: `In [${path.replace(/[[\]]/g, '\\$&')}:2](review-file:${referenceId}), the inserted \`value\` reaches the caller without validation.`,
           referenceIds: [referenceId],
         });
       if (step === 6) {
@@ -723,9 +772,7 @@ for (const outcome of ['completed', 'cancelled'] as const) {
     };
     const view = mount();
     await connected(view);
-    fireEvent.change(view.getByRole('combobox', { name: '交互模式' }), {
-      target: { value: 'review' },
-    });
+    await chooseMode(view, '代码审查');
     fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
       target: { value: 'Review changes incrementally' },
     });
@@ -737,6 +784,11 @@ for (const outcome of ['completed', 'cancelled'] as const) {
     fireEvent.click(view.getByRole('button', { name: '发送消息' }));
     await waitFor(() => expect(calls).toBe(6));
     await waitFor(() =>
+      expect((view.getByRole('combobox', { name: '交互模式' }) as HTMLButtonElement).disabled).toBe(
+        true,
+      ),
+    );
+    await waitFor(() =>
       expect(view.getByRole('article', { name: 'P1 Unchecked value' })).toBeDefined(),
     );
     expect(view.container.querySelectorAll('[data-review-finding]')).toHaveLength(1);
@@ -745,27 +797,51 @@ for (const outcome of ['completed', 'cancelled'] as const) {
       expect(restoreReviewState(host.savedState).sessions[0]!.reviews?.findings).toHaveLength(1),
     );
     expect(view.queryByText('审查已完成，已收录 1 条问题。')).toBeNull();
-    fireEvent.click(view.getByRole('button', { name: 'file.ts:2' }));
-    await waitFor(() => expect(host.openedReferences).toHaveLength(1));
-    if (outcome === 'completed') {
+    const article = view.getByRole('article');
+    const link = within(article).getByRole('link', { name: `${path}:2` });
+    expect(link.getAttribute('href')).toBe(`review-file:ref_${'b'.repeat(64)}`);
+    expect(article.querySelector('p > code')?.textContent).toBe('value');
+    expect(article.textContent).not.toContain('(review-file:');
+    fireEvent.click(link);
+    fireEvent.click(view.getByRole('button', { name: `${path}:2` }));
+    await waitFor(() => expect(host.openedReferences).toHaveLength(2));
+    expect(host.openedReferences.map(({ referenceId }) => referenceId)).toEqual([
+      `ref_${'b'.repeat(64)}`,
+      `ref_${'b'.repeat(64)}`,
+    ]);
+    if (outcome === 'completed' || outcome === 'incomplete') {
       await act(async () => {
         host.holdStream = false;
         host.streamOutput!.enqueue({ type: 'reasoning-end', id: 'waiting' });
         for (const chunk of reviewToolCall(6, 'finish_review', {
-          status: 'completed',
-          unfinishedItems: [],
-          limitations: [],
+          status: outcome,
+          unfinishedItems: outcome === 'incomplete' ? ['Remaining review work'] : [],
+          limitations: ['Static review only; tests were not run.'],
         }))
           host.streamOutput!.enqueue(chunk);
         host.streamOutput!.close();
         await host.settle();
       });
+    } else if (outcome === 'failed') {
+      await act(async () => {
+        host.holdStream = false;
+        host.streamOutput!.error(new Error('Provider failed after saving the finding'));
+        await host.settle();
+      });
     } else {
       fireEvent.click(view.getByRole('button', { name: '取消运行' }));
     }
-    const summary =
-      outcome === 'completed' ? '审查已完成，已收录 1 条问题。' : '审查已取消，已收录 1 条问题。';
+    const summary = `审查${{ completed: '已完成', incomplete: '未完成', cancelled: '已取消', failed: '失败' }[outcome]}，已收录 1 条问题。`;
     await waitFor(() => expect(view.getByText(summary)).toBeDefined());
+    await waitFor(() =>
+      expect((view.getByRole('combobox', { name: '交互模式' }) as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
+    );
+    expect(view.container.querySelector('[data-review-status]')?.textContent).toBe(summary);
+    expect(view.queryByText('审查限制')).toBeNull();
+    expect(view.queryByText('Static review only; tests were not run.')).toBeNull();
+    expect(view.queryByText('Remaining review work')).toBeNull();
     expect(calls).toBe(6);
     view.unmount();
     // Simulate a refresh between the Host commit and local receipt persistence.
@@ -777,9 +853,56 @@ for (const outcome of ['completed', 'cancelled'] as const) {
     await waitFor(() => expect(restored.getByText(summary)).toBeDefined());
     expect(restored.container.querySelectorAll('[data-review-finding]')).toHaveLength(1);
     expect(restored.getByRole('article', { name: 'P1 Unchecked value' })).toBeDefined();
+    expect(restored.container.querySelector('[data-review-status]')?.textContent).toBe(summary);
+    fireEvent.click(restored.getByRole('link', { name: `${path}:2` }));
+    await waitFor(() => expect(host.openedReferences).toHaveLength(3));
     expect(calls).toBe(6);
   });
 }
+
+test('finding Markdown keeps unverified references, HTML and unsafe URLs inert', async () => {
+  const { ReviewFindingCard } = await import('../src/components/AgentChat');
+  const context = incrementalReviewContext();
+  const { references } = await context.citeFiles({ reviewId: randomUUID(), references: [] });
+  const opened: string[] = [];
+  const view = render(
+    createElement(ReviewFindingCard, {
+      finding: {
+        id: 'a'.repeat(64),
+        runId: randomUUID(),
+        toolCallId: 'saved-finding',
+        title: 'Verified issue',
+        priority: 'P2',
+        description: [
+          references[0]!.markdown,
+          `[unverified](review-file:ref_${'c'.repeat(64)})`,
+          '[unregistered file](review-file:file%3A%2F%2F%2Ffixture%2Ffile.ts)',
+          '[unsafe](javascript:alert%281%29)',
+          '[external](https://example.com/docs)',
+          '![image](https://example.com/image.png)',
+          '',
+          '<img src="https://example.com/raw.png" />',
+          '<script>alert(1)</script>',
+        ].join('\n'),
+        references,
+        savedAt: new Date().toISOString(),
+      },
+      openReference: async (id) => {
+        opened.push(id);
+      },
+    }),
+  );
+  expect(view.queryByRole('link', { name: 'unverified' })).toBeNull();
+  expect(view.queryByRole('link', { name: 'unregistered file' })).toBeNull();
+  expect(view.getByText('unsafe').getAttribute('href')).toBe('');
+  expect(view.getByRole('link', { name: 'external' }).getAttribute('href')).toBe(
+    'https://example.com/docs',
+  );
+  expect(view.getByText('image')).toBeDefined();
+  expect(view.container.querySelector('img, script')).toBeNull();
+  fireEvent.click(view.getByRole('link', { name: 'file.ts:2' }));
+  expect(opened).toEqual([references[0]!.referenceId]);
+});
 
 test('assistant-ui Thread keeps Bridge tool output and copies the full assistant response through Host', async () => {
   host.includeTool = true;
@@ -1041,7 +1164,7 @@ test('failed timeline steps expose full errors and expandable raw tool input and
   expect(details.getAttribute('aria-expanded')).toBe('false');
 });
 
-test('Thread composer preserves drafts across tabs, sessions and remounts', async () => {
+test('Thread composer preserves drafts and modes across tabs, sessions and remounts', async () => {
   const view = mount();
   await connected(view);
   await send(view, 'draft-session');
@@ -1049,6 +1172,7 @@ test('Thread composer preserves drafts across tabs, sessions and remounts', asyn
   fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
     target: { value: '检查这个变更的边界情况' },
   });
+  await chooseMode(view, '代码审查');
   const first = restoreReviewState(host.savedState).activeSessionId;
   fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
   expect(view.queryByRole('textbox', { name: '询问 Agent' })).toBeNull();
@@ -1056,17 +1180,21 @@ test('Thread composer preserves drafts across tabs, sessions and remounts', asyn
   expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
     '检查这个变更的边界情况',
   );
+  expect(view.getByRole('combobox', { name: '交互模式' }).textContent).toContain('代码审查');
   fireEvent.click(view.getByRole('button', { name: '新建会话' }));
   expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe('');
+  expect(view.getByRole('combobox', { name: '交互模式' }).textContent).toContain('普通聊天');
   fireEvent.click(view.getByRole('tab', { name: 'History' }));
   fireEvent.click(view.getByRole('button', { name: /draft-session/ }));
   expect(restoreReviewState(host.savedState).activeSessionId).toBe(first);
+  expect(view.getByRole('combobox', { name: '交互模式' }).textContent).toContain('代码审查');
   await act(async () => cleanup());
   const restored = mount();
   await connected(restored);
   expect((restored.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
     '检查这个变更的边界情况',
   );
+  expect(restored.getByRole('combobox', { name: '交互模式' }).textContent).toContain('代码审查');
   expect(host.runs).toHaveLength(1);
 });
 
@@ -1462,6 +1590,36 @@ for (const terminal of ['error', 'cancel', 'new-session'] as const) {
   });
 }
 
+test('a failed turn renders the error state in its message and retries that turn', async () => {
+  const view = mount();
+  await streaming(view);
+  await act(async () => {
+    host.holdStream = false;
+    host.streamOutput!.error(new BridgeError('temporary_failure', 'Retry later', 503));
+    await host.settle();
+  });
+  const banner = await waitFor(() => {
+    const element = view.container.querySelector('[data-slot="error-state"]')!;
+    expect(element.textContent).toContain('Retry later');
+    return element;
+  });
+  // The failure sits in the message it belongs to, with the top banner free of
+  // it, and keeps its retry available.
+  expect(banner.getAttribute('role')).toBe('alert');
+  expect(banner.textContent).toContain('回复失败');
+  expect(banner.closest('[data-slot="aui_assistant-message-root"]')).not.toBeNull();
+  expect(view.container.querySelectorAll('[role="alert"]')).toHaveLength(1);
+
+  await act(async () => {
+    fireEvent.click(view.getByRole('button', { name: '重试' }));
+    await host.settle();
+  });
+  // The retried turn resends the same user message and replaces the failure.
+  await answered(view, 2);
+  expect(host.runs[1]!.text).toBe('streamed question');
+  expect(view.queryByRole('alert')).toBeNull();
+});
+
 for (const message of [
   'ChatGPT authorization was declined.',
   'OpenAI identity verification failed.',
@@ -1544,7 +1702,11 @@ test('restored legacy history is preserved and cannot silently start an empty Ho
   const view = mount();
   await connected(view);
   await send(view, 'continue the earlier question');
-  await waitFor(() => expect(view.getByRole('alert').textContent).toContain('旧会话未连接 Host'));
+  await waitFor(() =>
+    expect(view.container.querySelector('[data-slot="error-state"]')?.textContent).toContain(
+      '旧会话未连接 Host',
+    ),
+  );
   expect(view.getAllByText('earlier question')).toHaveLength(2);
   expect(view.getByText('earlier answer')).toBeDefined();
   expect(host.creations).toHaveLength(0);
@@ -1598,7 +1760,7 @@ for (const unavailable of ['model', 'account'] as const) {
     );
     await send(view, 'follow-up');
     await waitFor(() =>
-      expect(view.getByRole('alert').textContent).toContain(
+      expect(view.container.querySelector('[data-slot="error-state"]')?.textContent).toContain(
         unavailable === 'model' ? '模型在当前账户中不可用' : '属于另一个 ChatGPT 账户',
       ),
     );

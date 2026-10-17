@@ -4,6 +4,12 @@ import { GitStatusLine } from './GitStatusLine';
 import { Icon } from './Icon';
 import { OpenAILogo } from './assistant-ui/elements/logos';
 import { ModelSelector, type ModelOption } from './assistant-ui/elements/model-selector.aui';
+import {
+  ModelSelectorRoot,
+  ModelSelectorTrigger,
+  ModelSelectorContent,
+  ModelSelectorList,
+} from './assistant-ui/elements/model-selector';
 
 import { isReasoningEffort, type AgentModel, type ReasoningEffort } from '@shared/agentModels';
 import type { InteractionMode } from '@shared/review';
@@ -36,6 +42,64 @@ const EFFORT_LABELS: Record<ReasoningEffort, string> = {
   xhigh: 'XHigh',
   max: 'Max',
 };
+
+const INTERACTION_MODES: readonly ModelOption[] = [
+  {
+    id: 'chat',
+    name: '普通聊天',
+    description: '讨论代码、提问与交流',
+    icon: <Icon name="chat" />,
+  },
+  {
+    id: 'review',
+    name: '代码审查',
+    description: '核实改动中的问题并逐条收录',
+    icon: <Icon name="review" />,
+  },
+];
+
+function ReviewModeSelector() {
+  const { mode, onModeChange } = useContext(ReviewComposerContext)!;
+  const isRunning = useAuiState((state) => state.thread.isRunning);
+  const [open, setOpen] = useState(false);
+  return (
+    // The props-driven Element keeps this choice separate from model registration.
+    <ModelSelectorRoot
+      models={INTERACTION_MODES}
+      value={mode}
+      onValueChange={(value) => {
+        if (!isRunning && (value === 'chat' || value === 'review')) onModeChange(value);
+      }}
+      open={!isRunning && open}
+      onOpenChange={setOpen}
+    >
+      <ModelSelectorTrigger
+        aria-label="交互模式"
+        disabled={isRunning}
+        variant="ghost"
+        size="sm"
+        className="shrink-0 px-2 text-muted-foreground"
+      />
+      <ModelSelectorContent
+        label="交互模式"
+        searchable={false}
+        side="top"
+        className="w-64 max-w-[calc(100vw-1.5rem)] border-widget"
+      >
+        <ModelSelectorList label="交互模式" />
+      </ModelSelectorContent>
+    </ModelSelectorRoot>
+  );
+}
+
+export function ReviewComposerControls() {
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-1">
+      <ReviewModeSelector />
+      <ReviewModelSelector />
+    </div>
+  );
+}
 
 export function ReviewModelSelector() {
   const {
@@ -134,23 +198,12 @@ export function ReviewComposerInput({ autoFocus }: { autoFocus: boolean }) {
 }
 
 export function ReviewComposerFooter() {
-  const { onNew, modelsLoading, mode, onModeChange } = useContext(ReviewComposerContext)!;
+  const { onNew, modelsLoading } = useContext(ReviewComposerContext)!;
   const text = useAuiState((state) => state.composer.text);
-  const isRunning = useAuiState((state) => state.thread.isRunning);
   return (
     <div className="mt-1 flex min-w-0 flex-col gap-0.5 text-[0.7rem] text-muted">
       <GitStatusLine />
       <div className="flex min-w-0 items-center justify-between gap-2">
-        <select
-          aria-label="交互模式"
-          value={mode}
-          disabled={isRunning}
-          onChange={(event) => onModeChange(event.target.value === 'review' ? 'review' : 'chat')}
-          className="rounded-sm bg-input text-input-foreground"
-        >
-          <option value="review">代码审查</option>
-          <option value="chat">普通聊天</option>
-        </select>
         <span id="composer-hint" className="truncate" aria-live="polite">
           {modelsLoading
             ? '正在加载模型…'

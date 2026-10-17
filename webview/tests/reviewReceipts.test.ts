@@ -128,11 +128,39 @@ test('expired Host keeps cached findings, marks running work incomplete and expo
   const markdown = sessionMarkdown(restored);
   expect(markdown).toContain('[P1] Missing check');
   expect(markdown).toContain('A verified failure.');
-  expect(markdown).toContain('Host 会话已结束');
+  expect(markdown).toContain('审查已中断，已收录 1 条问题。');
+  expect(markdown).not.toContain('Host 会话已结束');
   expect(markdown).not.toContain('unsubmitted prose');
   const malformed = restoreReviewState({
     sessions: [{ ...session, reviews: { findings: [null] } }],
   }).sessions[0]!;
   expect(malformed.reviews).toBeUndefined();
   expect(malformed.messages).toHaveLength(1);
+});
+
+test('exported reviews include saved issues and actual status without closing notes', () => {
+  const saved = receipts();
+  const run = saved.runs[0]!;
+  run.status = 'incomplete';
+  run.summary = '审查未完成，已收录 1 条问题。';
+  run.unfinishedItems = ['Remaining review work'];
+  run.limitations = ['Static review only'];
+  const markdown = sessionMarkdown({
+    ...createSession(),
+    reviews: saved,
+    messages: [
+      {
+        id: `review-${run.id}`,
+        role: 'assistant',
+        reviewRunId: run.id,
+        text: 'unsubmitted prose',
+        createdAt: run.startedAt,
+      },
+    ],
+  });
+  expect(markdown).toContain('[P1] Missing check');
+  expect(markdown).toContain(run.summary);
+  expect(markdown).not.toContain('Remaining review work');
+  expect(markdown).not.toContain('Static review only');
+  expect(markdown).not.toContain('unsubmitted prose');
 });

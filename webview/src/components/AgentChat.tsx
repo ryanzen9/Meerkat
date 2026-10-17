@@ -1,12 +1,16 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   ActionBarPrimitive,
   AuiConfig,
   Tools,
   defineToolkit,
   makeAssistantDataUI,
+  useAui,
   useAuiState,
+  type AssistantState,
   type ToolCallMessagePartComponent,
 } from '@assistant-ui/react';
 import type { CodeHeaderProps } from '@assistant-ui/react-markdown';
@@ -14,6 +18,7 @@ import type { GitRepositoryInfo, PanelSnapshot } from '@shared/models';
 import { ReviewGitContext } from './GitStatusLine';
 import { Icon } from './Icon';
 import { Thread, type ThreadComponents } from './assistant-ui/elements/thread.aui';
+import { ErrorState } from './assistant-ui/elements/error-state';
 import { MarkdownText } from './assistant-ui/elements/markdown-text';
 import { cn } from '../lib/utils';
 import { isFileReferenceId } from '@shared/protocol';
@@ -28,7 +33,7 @@ import {
   ReviewComposerContext,
   ReviewComposerInput,
   ReviewComposerFooter,
-  ReviewModelSelector,
+  ReviewComposerControls,
   type ReviewComposerState,
 } from './ReviewComposer';
 
@@ -47,6 +52,21 @@ export function ReviewFindingCard({
   finding: ReviewFinding;
   openReference(referenceId: string): Promise<unknown>;
 }) {
+  // Tool results have no text-part scope for MarkdownTextPrimitive to read.
+  const markdownComponents = useMemo<Components>(
+    () => ({
+      ...FINDING_MARKDOWN_COMPONENTS,
+      a: ({ href, children }) => (
+        <MarkdownLink
+          href={href}
+          referenceScope={{ references: finding.references, openReference }}
+        >
+          {children}
+        </MarkdownLink>
+      ),
+    }),
+    [finding.references, openReference],
+  );
   return (
     <article
       data-review-finding={finding.id}
@@ -60,9 +80,16 @@ export function ReviewFindingCard({
         <h3 className="min-w-0 flex-1 text-sm font-semibold wrap-anywhere">{finding.title}</h3>
         <span className="shrink-0 text-xs text-muted">已保存</span>
       </div>
-      <p className="text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap">
-        {finding.description}
-      </p>
+      <div className="min-w-0 text-sm leading-relaxed wrap-anywhere">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          skipHtml
+          urlTransform={markdownUrlTransform}
+          components={markdownComponents}
+        >
+          {finding.description}
+        </ReactMarkdown>
+      </div>
       <ul aria-label="已验证的代码引用" className="mt-3 flex flex-wrap gap-2">
         {finding.references.map((reference) => (
           <li key={reference.referenceId}>
@@ -116,26 +143,6 @@ export function ReviewRunSummary({ run }: { run: ReviewRunState }) {
       className="my-3 rounded-md border border-widget p-3 text-sm"
     >
       <p>{run.summary}</p>
-      {run.unfinishedItems.length > 0 && (
-        <div className="mt-2">
-          <p className="font-medium">未完成事项</p>
-          <ul className="list-disc pl-5">
-            {run.unfinishedItems.map((item, index) => (
-              <li key={index}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {run.limitations.length > 0 && (
-        <div className="mt-2">
-          <p className="font-medium">审查限制</p>
-          <ul className="list-disc pl-5">
-            {run.limitations.map((item, index) => (
-              <li key={index}>{item}</li>
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
@@ -191,8 +198,17 @@ function CodeHeader({ language = '', code }: CodeHeaderProps) {
   );
 }
 
-function MarkdownLink({ href, children }: ComponentPropsWithoutRef<'a'>) {
-  const actions = useContext(ChatActionsContext)!;
+function MarkdownLink({
+  href,
+  children,
+  referenceScope,
+}: ComponentPropsWithoutRef<'a'> & {
+  referenceScope?: {
+    references: ReviewFinding['references'];
+    openReference(referenceId: string): Promise<unknown>;
+  };
+}) {
+  const actions = useContext(ChatActionsContext);
   if (href?.startsWith('review-file:')) {
     let target: string;
     try {
@@ -201,6 +217,11 @@ function MarkdownLink({ href, children }: ComponentPropsWithoutRef<'a'>) {
       return <span title="引用格式无效">{children}</span>;
     }
     const reference = isFileReferenceId(target);
+    if (
+      referenceScope &&
+      !referenceScope.references.some(({ referenceId }) => referenceId === target)
+    )
+      return <span title="引用未通过验证">{children}</span>;
     if (!reference && !/^(file:|vscode-remote:)/.test(target))
       return <span title="引用格式无效">{children}</span>;
     return (
@@ -212,9 +233,11 @@ function MarkdownLink({ href, children }: ComponentPropsWithoutRef<'a'>) {
         href={href}
         onClick={(event) => {
           event.preventDefault();
-          void (reference ? actions.openReference(target) : actions.openFile(target)).catch(
-            () => {},
-          );
+          void (
+            reference
+              ? (referenceScope?.openReference ?? actions!.openReference)(target)
+              : actions!.openFile(target)
+          ).catch(() => {});
         }}
       >
         {children}
@@ -241,6 +264,24 @@ const MARKDOWN_COMPONENTS = {
 
 const markdownUrlTransform = (url: string) =>
   /^(https?:|mailto:|review-file:)/.test(url) ? url : '';
+
+const FINDING_MARKDOWN_COMPONENTS: Components = {
+  img: MARKDOWN_COMPONENTS.img,
+  p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
+  code: ({ children }) => (
+    <code className="rounded-sm bg-code px-1 py-0.5 font-mono text-[0.9em]">{children}</code>
+  ),
+  pre: ({ children }) => (
+    <pre className="my-2 max-w-full overflow-x-auto rounded-md bg-code p-2 whitespace-pre">
+      {children}
+    </pre>
+  ),
+  ul: ({ children }) => <ul className="my-2 list-disc pl-5">{children}</ul>,
+  ol: ({ children }) => <ol className="my-2 list-decimal pl-5">{children}</ol>,
+  blockquote: ({ children }) => (
+    <blockquote className="my-2 border-l-2 border-widget pl-3 text-muted">{children}</blockquote>
+  ),
+};
 
 function ReviewMarkdownText() {
   const reviewMessage = useAuiState(
@@ -308,17 +349,62 @@ function ReviewAssistantActionBar() {
   );
 }
 
+/**
+ * The failure a turn carries, read from its message: the run error's `message`
+ * when it has one, mirroring assistant-ui's own error predicate without adding
+ * `@assistant-ui/core` as a direct dependency.
+ */
+const messageErrorDetail = (state: AssistantState) => {
+  const status = state.message.status;
+  if (status?.type !== 'incomplete' || status.reason !== 'error') return undefined;
+  const error = status.error;
+  if (typeof error === 'string') return error;
+  if (
+    error !== null &&
+    typeof error === 'object' &&
+    'message' in error &&
+    typeof error.message === 'string'
+  )
+    return error.message;
+  // The runtime always carries one of the shapes above; keep a failure visible
+  // if a host ever reports something else.
+  return '发生未知错误。';
+};
+
+/**
+ * A failed turn renders where the reply would have been, as the
+ * `elements-error-state` banner. Retry re-runs from this message's parent: the
+ * Host drops an uncommitted turn, so a retry cannot duplicate its history. The
+ * element hides its button behind the retrying line while a run is in flight,
+ * which also keeps a second retry from starting on top of one.
+ */
+function ReviewMessageError() {
+  const aui = useAui();
+  const detail = useAuiState(messageErrorDetail);
+  const retrying = useAuiState((state) => state.thread.isRunning);
+  if (detail === undefined) return null;
+  return (
+    <ErrorState
+      title="回复失败"
+      detail={detail}
+      retrying={retrying}
+      onRetry={() => aui.message.reload()}
+    />
+  );
+}
+
 // The Host stores an append-only conversation, so editing and regeneration
 // are not exposed until the Bridge supports replacing the remote history.
 const THREAD_COMPONENTS: ThreadComponents = {
   Text: ReviewMarkdownText,
   ComposerInput: ReviewComposerInput,
   ComposerFooter: ReviewComposerFooter,
-  ComposerLeading: ReviewModelSelector,
+  ComposerLeading: ReviewComposerControls,
   AssistantActionBar: ReviewAssistantActionBar,
   UserActionBar: () => null,
-  // App renders connection and run failures in its shared alert banner.
-  MessageError: () => null,
+  // A failed turn carries its own error; App keeps connection and panel
+  // failures in its shared alert banner.
+  MessageError: ReviewMessageError,
 };
 
 export function AgentChat({

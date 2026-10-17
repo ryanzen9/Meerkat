@@ -122,12 +122,12 @@ export function App() {
                 {panel.error}
               </p>
             )}
-            {(connection.error || chat.error) && (
+            {(connection.error || chat.cleanupError) && (
               <p
                 role="alert"
                 className="shrink-0 border-b border-error/30 px-3 py-2 text-[0.85rem] text-error"
               >
-                {connection.error || chat.error}
+                {connection.error || chat.cleanupError}
                 {connection.modelsFailed && (
                   <button
                     type="button"

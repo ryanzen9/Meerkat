@@ -239,11 +239,13 @@ export class BridgeRuntime {
   }
   async readFileReference(sessionId: string, referenceId: string) {
     if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
-    this.sessions.get(sessionId);
+    const session = this.sessions.get(sessionId);
     const context = this.reviewContexts.get(sessionId);
     if (!context)
       throw new BridgeError('reference_not_found', 'File reference expired or is unknown.', 404);
-    return context.readFileReference(referenceId);
+    const result = await context.readFileReference(referenceId);
+    // The editor receives only committed receipts from the reference's own session.
+    return { ...result, findings: session.reviews.findingsForReference(referenceId) };
   }
   cancel(id: string): void {
     const run = this.runs.get(id);

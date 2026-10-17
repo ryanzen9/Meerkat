@@ -419,7 +419,9 @@ export function useReviewChat(connection: {
     mode,
     setMode,
     setReasoningEffort,
-    error: bindingError || chat.error?.message || cleanupError,
+    // A failed turn renders in the message it belongs to (AgentChat's
+    // MessageError); the shared banner keeps only panel-side problems.
+    cleanupError,
     isRunning: chat.status === 'submitted' || chat.status === 'streaming',
     setDraft,
     setTab,

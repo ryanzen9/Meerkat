@@ -156,6 +156,20 @@ test('incremental submissions validate, deduplicate, retry finish and stop witho
       new Request(`http://localhost/v1/sessions/${f.session.id}/reviews`),
     );
     expect(await response.json()).toEqual(saved);
+    const reference = saved.findings[0]!.references[0]!;
+    const editorResult = await f.runtime.readFileReference(f.session.id, reference.referenceId);
+    expect(editorResult.findings).toEqual(saved.findings);
+    editorResult.findings[0]!.title = 'tampered editor copy';
+    expect(f.session.reviews.snapshot().findings[0]!.title).toBe('Missing validation');
+    const fileReference = (
+      await f.fixture.context.citeFiles({
+        reviewId: reference.reviewId,
+        references: [{ path: 'file.ts', version: 'new', scope: 'file' }],
+      })
+    ).references[0]!;
+    expect(
+      (await f.runtime.readFileReference(f.session.id, fileReference.referenceId)).findings,
+    ).toEqual([]);
     saved.findings[0]!.title = 'mutated';
     expect(f.session.reviews.snapshot().findings[0]!.title).toBe('Missing validation');
   } finally {
@@ -295,6 +309,11 @@ for (const outcome of ['cancelled', 'failed'] as const) {
       });
       expect(f.session.reviews.snapshot().findings).toHaveLength(1);
       expect(f.session.history.getMessages()).toEqual([]);
+      const savedFinding = f.session.reviews.snapshot().findings[0]!;
+      expect(
+        (await f.runtime.readFileReference(f.session.id, savedFinding.references[0]!.referenceId))
+          .findings,
+      ).toEqual([savedFinding]);
       expect(output).toContain('tool-output-available');
       expect(output).not.toContain('审查已完成');
     } finally {
