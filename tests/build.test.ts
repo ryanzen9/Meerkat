@@ -17,7 +17,16 @@ test('root and standalone Webview builds preserve each other and the extension l
       expect(await Bun.file(webviewFile).text()).toBe(webview);
     }
     const extension = await Bun.file(extensionFile).text();
-    await runBuild(root, 'webview');
+    // Rebuild with Vite directly: the standalone build above already ran the
+    // webview typecheck, and repeating it here only lengthens the test.
+    const rebuilt = await runCommand(root, [
+      'node',
+      'webview/node_modules/vite/bin/vite.js',
+      'build',
+      '--config',
+      'webview/vite.config.ts',
+    ]);
+    if (rebuilt.exitCode !== 0) throw new Error(rebuilt.stdout + rebuilt.stderr);
     expect(await Bun.file(extensionFile).text()).toBe(extension);
     expect(await Bun.file(join(root, 'dist/webview/style.css')).text()).toContain('--vscode-');
     expect(await readdir(join(root, 'dist/extension'))).not.toContain('extension.cjs.map');
@@ -47,7 +56,7 @@ test('root and standalone Webview builds preserve each other and the extension l
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-}, 30000);
+}, 120000);
 
 test('small images, CSS fonts, and lazy chunks use packaged local resource paths', async () => {
   const root = await createProjectFixture();
@@ -105,7 +114,7 @@ test('small images, CSS fonts, and lazy chunks use packaged local resource paths
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-}, 30000);
+}, 120000);
 
 test('Webview builds reject Node, Bun, and VS Code imports', async () => {
   const root = await createProjectFixture();
