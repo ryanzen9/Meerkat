@@ -37,6 +37,15 @@ export interface GitRepositoryInfo {
   remotes: string[];
   changes: GitFileChange[];
   stagedChanges: GitFileChange[];
+  sync?: GitSyncInfo;
+}
+
+export interface GitSyncInfo {
+  head: string | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  canUndo: boolean;
 }
 
 export interface GitSummary {
@@ -68,6 +77,7 @@ export interface WebviewState {
   activeSessionId?: string;
   sessions?: ChatSession[];
   pendingBridgeSessionDeletes?: string[];
+  pendingBridgeSessionReleases?: string[];
 }
 
 export type ReviewTab = 'chat' | 'files' | 'history';

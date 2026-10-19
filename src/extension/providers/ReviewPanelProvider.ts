@@ -5,17 +5,22 @@ import type { WorkspaceService } from '../services/WorkspaceService';
 import type { SettingsService } from '../services/SettingsService';
 import type { StateService } from '../services/StateService';
 import type { GitService } from '../services/GitService';
+import { gitErrorMessage } from '../services/GitService';
 import { createWebviewHtml } from '../webview/html';
 import { WebviewBridgeProxy } from '../bridge/transport/webviewProxy';
 import type { BridgeService } from '../bridge/service';
 import type { ReferenceEditorService } from '../services/ReferenceEditorService';
 import { BridgeError, publicError } from '../bridge/errors';
+import type { ReviewFindingChange } from '../../shared/review';
 
 interface PanelServices {
   workspace: Pick<WorkspaceService, 'read'>;
   settings: Pick<SettingsService, 'read'>;
   state: Pick<StateService, 'read' | 'incrementMessageCount'>;
-  git: Pick<GitService, 'read'>;
+  git: Pick<
+    GitService,
+    'read' | 'stage' | 'unstage' | 'commit' | 'stageAll' | 'unstageAll' | 'push' | 'undoCommit'
+  >;
   bridge?: Pick<BridgeService, 'request'>;
   referenceEditor?: Pick<ReferenceEditorService, 'open'>;
 }
@@ -26,6 +31,7 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
   private ready = false;
   private listeners: vscode.Disposable[] = [];
   private bridgeProxy: WebviewBridgeProxy | undefined;
+  private snapshotRevision = 0;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -52,7 +58,10 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
         void this.handleMessage(view, message);
       }),
       view.onDidChangeVisibility(() => {
-        if (view.visible) void this.refresh();
+        if (view.visible) {
+          void this.refresh();
+          if (this.ready) void this.post(view, { type: 'host/review-refresh' });
+        }
       }),
       view.onDidDispose(() => {
         if (this.view === view) this.dispose();
@@ -69,6 +78,11 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
     } catch (error) {
       await this.reportError(view, error);
     }
+  }
+
+  async findingChanged(change: ReviewFindingChange): Promise<void> {
+    if (this.view && this.ready)
+      await this.post(this.view, { type: 'host/review-finding-changed', ...change });
   }
 
   reload(): void {
@@ -108,6 +122,34 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
           break;
         case 'workspace/refresh':
           await this.sendSnapshot(view, message.requestId);
+          break;
+        case 'git/stage':
+          await this.services.git.stage(message.repositoryUri, message.uri);
+          await this.sendGitResult(view, message.requestId);
+          break;
+        case 'git/unstage':
+          await this.services.git.unstage(message.repositoryUri, message.uri);
+          await this.sendGitResult(view, message.requestId);
+          break;
+        case 'git/commit':
+          await this.services.git.commit(message.repositoryUri, message.message);
+          await this.sendGitResult(view, message.requestId);
+          break;
+        case 'git/stage-all':
+          await this.services.git.stageAll(message.repositoryUri);
+          await this.sendGitResult(view, message.requestId);
+          break;
+        case 'git/unstage-all':
+          await this.services.git.unstageAll(message.repositoryUri);
+          await this.sendGitResult(view, message.requestId);
+          break;
+        case 'git/push':
+          await this.services.git.push(message.repositoryUri, message.branch, message.head);
+          await this.sendGitResult(view, message.requestId);
+          break;
+        case 'git/undo-commit':
+          await this.services.git.undoCommit(message.repositoryUri, message.branch, message.head);
+          await this.sendGitResult(view, message.requestId);
           break;
         case 'settings/open':
           await vscode.commands.executeCommand(
@@ -177,13 +219,37 @@ export class ReviewPanelProvider implements vscode.WebviewViewProvider, vscode.D
         view,
         error,
         'requestId' in message ? message.requestId : undefined,
-        message.type === 'reference/open' ? referenceErrorMessage(error) : undefined,
+        message.type === 'reference/open'
+          ? referenceErrorMessage(error)
+          : message.type.startsWith('git/')
+            ? gitErrorMessage(error)
+            : undefined,
       );
     }
   }
 
+  private async sendGitResult(view: vscode.WebviewView, requestId: string): Promise<void> {
+    try {
+      await this.sendSnapshot(view, requestId);
+    } catch (error) {
+      this.output.warn('Git operation succeeded but panel refresh failed', error);
+      await this.post(view, { type: 'host/action', requestId });
+      await this.post(view, {
+        type: 'host/error',
+        message: 'Git 操作已成功，但刷新状态失败，请刷新工作区。',
+      });
+    }
+  }
+
   private async sendSnapshot(view: vscode.WebviewView, requestId?: string): Promise<void> {
+    const revision = ++this.snapshotRevision;
     const git = await this.services.git.read();
+    // Git count queries may finish out of order. Acknowledge superseded requests
+    // without replacing a newer snapshot with their older repository state.
+    if (revision !== this.snapshotRevision) {
+      if (requestId) await this.post(view, { type: 'host/ack', requestId });
+      return;
+    }
     await this.post(view, {
       type: 'host/snapshot',
       ...(requestId ? { requestId } : {}),
@@ -239,6 +305,10 @@ function referenceErrorMessage(error: unknown): string {
       return '请先信任当前工作区，再打开代码引用。';
     case 'repository_unavailable':
       return '引用所属仓库已不在当前工作区，请重新打开仓库。';
+    case 'reference_corrupt':
+      return '已保存的代码引用损坏或不完整，请重新生成引用。';
+    case 'reference_unavailable':
+      return '暂时无法读取已保存的代码引用，请重试。';
     default:
       return '无法打开代码引用，请重新生成引用或重试。';
   }

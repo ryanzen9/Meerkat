@@ -1,5 +1,6 @@
 import type { ChatSession } from '@shared/models';
 import { Icon } from './Icon';
+import { useState } from 'react';
 
 export function SessionHistory({
   sessions,
@@ -12,8 +13,12 @@ export function SessionHistory({
   onSelect(id: string): void;
   onNew(): void;
 }) {
+  const [visibleCount, setVisibleCount] = useState(20);
   const history = sessions
-    .filter(({ messages }) => messages.length)
+    .filter(
+      ({ messages, reviews }) =>
+        messages.length || reviews?.runs.length || reviews?.findings.length,
+    )
     // oxlint-disable-next-line unicorn/no-array-sort -- filter created a fresh array; keep ES2022 support.
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   return (
@@ -31,7 +36,7 @@ export function SessionHistory({
       </div>
       {history.length ? (
         <ul className="space-y-2">
-          {history.map((session) => (
+          {history.slice(0, visibleCount).map((session) => (
             <li key={session.id}>
               <button
                 type="button"
@@ -67,6 +72,15 @@ export function SessionHistory({
             在 Chat 发送问题后，随时从这里继续对话。
           </p>
         </div>
+      )}
+      {history.length > visibleCount && (
+        <button
+          type="button"
+          className="mt-3 w-full rounded-sm px-2 py-2 text-sm text-link hover:bg-hover"
+          onClick={() => setVisibleCount((count) => count + 20)}
+        >
+          加载更多会话
+        </button>
       )}
     </div>
   );

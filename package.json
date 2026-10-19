@@ -112,6 +112,24 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "meerkat.resolveReviewFinding",
+        "title": "标记为已解决",
+        "category": "Meerkat",
+        "icon": "$(check)"
+      },
+      {
+        "command": "meerkat.reopenReviewFinding",
+        "title": "标记为未解决",
+        "category": "Meerkat",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "meerkat.archiveReviewFinding",
+        "title": "归档批注",
+        "category": "Meerkat",
+        "icon": "$(archive)"
+      },
+      {
         "command": "meerkat.reloadWebview",
         "title": "Reload Webview",
         "category": "Meerkat",
@@ -119,6 +137,37 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "meerkat.archiveReviewFinding",
+          "when": "false"
+        },
+        {
+          "command": "meerkat.resolveReviewFinding",
+          "when": "false"
+        },
+        {
+          "command": "meerkat.reopenReviewFinding",
+          "when": "false"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "meerkat.archiveReviewFinding",
+          "when": "commentController == meerkat.review && (commentThread == meerkat.review.unresolved || commentThread == meerkat.review.resolved)",
+          "group": "navigation@2"
+        },
+        {
+          "command": "meerkat.resolveReviewFinding",
+          "when": "commentController == meerkat.review && commentThread == meerkat.review.unresolved",
+          "group": "navigation@1"
+        },
+        {
+          "command": "meerkat.reopenReviewFinding",
+          "when": "commentController == meerkat.review && commentThread == meerkat.review.resolved",
+          "group": "navigation@1"
+        }
+      ],
       "view/title": [
         {
           "command": "meerkat.refresh",

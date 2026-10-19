@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { GitRepositoryInfo, PanelSnapshot } from '@shared/models';
 import { changeCounts } from '@shared/git';
 import { cn } from '../lib/utils';
@@ -13,10 +12,7 @@ interface ReviewContextProps {
   onRepositoryChange(uri: string): void;
 }
 
-/**
- * Workspace context header of the Files tab. The summary row stays visible;
- * the Git detail row collapses so the file list keeps the vertical space.
- */
+/** One-line repository, branch and Git status summary for the Files tab. */
 export function ReviewContext({
   snapshot,
   repository,
@@ -24,53 +20,26 @@ export function ReviewContext({
   error,
   onRepositoryChange,
 }: ReviewContextProps) {
-  const [expanded, setExpanded] = useState(true);
   const counts = changeCounts(repository);
-  const review =
-    snapshot?.review?.repositoryUri === repository?.rootUri ? snapshot?.review : undefined;
-  const status = error
-    ? 'Error'
-    : refreshing
-      ? 'Refreshing…'
-      : !snapshot
-        ? 'Connecting…'
-        : review?.status === 'analyzing'
-          ? 'Analyzing…'
-          : review?.issueCount
-            ? `${review.issueCount} Issue${review.issueCount === 1 ? '' : 's'}`
-            : review?.status === 'ready'
-              ? 'Ready'
-              : 'Idle';
+  const branch = repository ? (repository.branch ?? 'Detached HEAD') : '—';
+  const status = error ? 'Error' : refreshing ? 'Refreshing…' : gitStatusText(snapshot, repository);
   const statusColor = error
-    ? 'border-error/30 bg-error/10 text-error'
-    : review?.status === 'analyzing' || refreshing || !snapshot
-      ? 'border-link/30 bg-link/10 text-link'
-      : review?.issueCount
-        ? 'border-modified/30 bg-modified/10 text-modified'
-        : review?.status === 'ready'
-          ? 'border-added/30 bg-added/10 text-added'
-          : 'border-widget bg-sidebar text-muted';
-  const gitStatus = gitStatusText(snapshot, repository);
+    ? 'text-error'
+    : refreshing || !snapshot
+      ? 'text-link'
+      : status.toLowerCase().includes('conflict')
+        ? 'text-deleted'
+        : status === 'Clean'
+          ? 'text-muted'
+          : 'text-foreground';
+  const repositoryName = repository?.name ?? snapshot?.workspace.name ?? 'Workspace';
+
   return (
     <section aria-label="工作区上下文" className="shrink-0 border-b border-widget bg-surface">
-      <div className="flex min-w-0 items-center gap-1.5 px-2 py-1.5">
-        <button
-          type="button"
-          className="icon-button size-5"
-          aria-expanded={expanded}
-          aria-controls="review-context-details"
-          aria-label={expanded ? '收起工作区上下文' : '展开工作区上下文'}
-          title={expanded ? '收起工作区上下文' : '展开工作区上下文'}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          <Icon
-            name="chevron"
-            className={cn(
-              'size-3 text-muted transition-transform motion-reduce:transition-none',
-              expanded && 'rotate-90',
-            )}
-          />
-        </button>
+      <div
+        className="flex min-w-0 items-center gap-2 overflow-hidden px-2 py-1.5 whitespace-nowrap"
+        title={[repository?.rootUri, branch, status].filter(Boolean).join(' · ')}
+      >
         {snapshot && snapshot.git.repositories.length > 1 ? (
           <select
             aria-label="选择 Git 仓库"
@@ -86,40 +55,31 @@ export function ReviewContext({
           </select>
         ) : (
           <span
-            className="min-w-0 flex-1 truncate text-[0.85rem] font-semibold"
-            title={repository?.rootUri}
+            className="min-w-0 flex-1 truncate text-[0.8rem] font-semibold"
+            title={repositoryName}
           >
-            {review?.pullRequestNumber
-              ? `PR #${review.pullRequestNumber} · ${repository?.branch ?? repository?.name}`
-              : (repository?.name ?? snapshot?.workspace.name ?? 'Workspace')}
+            {repositoryName}
           </span>
         )}
         <span
-          role="status"
-          className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-1.5 py-0.5 text-[0.75rem] ${statusColor}`}
+          role="group"
+          className="flex max-w-[32%] min-w-0 shrink items-center gap-1 text-[0.72rem] text-muted"
+          aria-label={`分支 ${branch}`}
         >
-          <span className="size-1.5 rounded-full bg-current" />
+          <Icon name="branch" className="size-3 shrink-0" />
+          <span className="truncate font-mono">{branch}</span>
+        </span>
+        <span
+          role="status"
+          title={status}
+          className={cn('max-w-[28%] shrink-0 truncate text-[0.72rem]', statusColor)}
+        >
           {status}
         </span>
-      </div>
-      <div
-        id="review-context-details"
-        hidden={!expanded}
-        className="flex min-w-0 items-center gap-2 px-2 pb-1.5 text-[0.8rem] text-muted"
-      >
-        <span
-          className="flex min-w-0 flex-1 items-center gap-1.5"
-          title={[repository?.branch, ...(repository?.remotes ?? [])].filter(Boolean).join(' · ')}
-        >
-          <Icon name="branch" className="size-3.5" />
-          <span className="truncate font-mono">
-            {repository ? (repository.branch ?? 'Detached HEAD') : '—'}
-          </span>
-        </span>
-        <span className="shrink-0">{gitStatus}</span>
         {repository && (
           <span
-            className="flex shrink-0 gap-1.5 font-mono"
+            role="group"
+            className="flex shrink-0 gap-1 font-mono text-[0.72rem]"
             aria-label={`新增 ${counts.added}，修改 ${counts.modified}，删除 ${counts.deleted}`}
           >
             <span className="text-added" title="新增文件">

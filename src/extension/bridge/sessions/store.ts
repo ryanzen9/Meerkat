@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { BridgeError } from '../errors';
 import { SessionHistory } from './history';
-import { ReviewJournal } from './reviews';
+import type { ReviewJournal } from './reviews';
+import { ReviewArchive, type ReviewStorage } from './reviewArchive';
 import type { ProviderSession } from '../providers/types';
 
 export interface BridgeSession {
@@ -23,15 +24,20 @@ export function sessionInfo(session: BridgeSession) {
 }
 export class SessionStore {
   private readonly sessions = new Map<string, BridgeSession>();
+  readonly reviews: ReviewArchive;
+  constructor(storage?: ReviewStorage) {
+    this.reviews = new ReviewArchive(storage);
+  }
   create(providerId: string, provider: ProviderSession): BridgeSession {
     if (this.sessions.size >= 100)
       throw new BridgeError('sessions_full', 'Delete a session before creating another.', 429);
+    const id = randomUUID();
     const session = {
-      id: randomUUID(),
+      id,
       providerId,
       provider,
       history: new SessionHistory(),
-      reviews: new ReviewJournal(),
+      reviews: this.reviews.create(id),
       createdAt: new Date().toISOString(),
     };
     this.sessions.set(session.id, session);

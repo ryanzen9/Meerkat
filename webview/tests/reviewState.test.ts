@@ -60,6 +60,30 @@ test('switching sessions preserves other conversations and bounds retained histo
   expect(restoreReviewState({ sessions: [invalid] }).sessions[0]?.messages).toEqual([]);
 });
 
+test('the recent model window retains all conversations and their review metadata', () => {
+  const first = appendTurn(restoreReviewState({}), 'first retained review', 'saved receipt');
+  first.sessions[0]!.bridgeSessionId = crypto.randomUUID();
+  const original = structuredClone(first.sessions[0]!);
+  let state = first;
+  for (let index = 0; index < 25; index++) {
+    state = startNewReviewSession(state);
+    state = appendTurn(state, `question-${index}`, 'answer');
+  }
+  expect(state.sessions).toHaveLength(26);
+  expect(state.sessions[0]).toEqual(original);
+  expect(state.pendingBridgeSessionReleases).toContain(original.bridgeSessionId!);
+  const restored = restoreReviewState(JSON.parse(JSON.stringify(state)));
+  expect(restored.sessions).toEqual(state.sessions);
+  expect(restored.pendingBridgeSessionReleases).toEqual(state.pendingBridgeSessionReleases);
+  // Once released, restoration must not enqueue the same historical IDs again.
+  expect(
+    restoreReviewState({ ...restored, pendingBridgeSessionReleases: [] })
+      .pendingBridgeSessionReleases,
+  ).toEqual([]);
+  const legacy = restoreReviewState({ pendingBridgeSessionDeletes: [crypto.randomUUID()] });
+  expect(legacy.pendingBridgeSessionReleases).toHaveLength(1);
+});
+
 test('reasoning settings restore per session and invalid saved settings preserve the transcript', () => {
   const original = { ...createSession(), reasoningEffort: 'high' as const };
   const state = appendTurn(restoreReviewState({ sessions: [original] }), 'Question', 'Answer');

@@ -1,4 +1,5 @@
 import type { GitFileChange, PanelSnapshot } from './models';
+import { reviewFindingSchema, type ReviewFindingChange } from './review';
 
 export type WebviewToExtensionMessage =
   | { type: 'webview/ready' }
@@ -8,6 +9,16 @@ export type WebviewToExtensionMessage =
   | { type: 'code/open'; requestId: string; code: string; language: string }
   | { type: 'clipboard/write'; requestId: string; text: string }
   | { type: 'settings/open'; requestId: string }
+  | { type: 'git/stage' | 'git/unstage'; requestId: string; repositoryUri: string; uri: string }
+  | { type: 'git/commit'; requestId: string; repositoryUri: string; message: string }
+  | { type: 'git/stage-all' | 'git/unstage-all'; requestId: string; repositoryUri: string }
+  | {
+      type: 'git/push' | 'git/undo-commit';
+      requestId: string;
+      repositoryUri: string;
+      branch: string;
+      head: string;
+    }
   | {
       type: 'bridge/request';
       requestId: string;
@@ -19,9 +30,12 @@ export type WebviewToExtensionMessage =
   | { type: 'demo/hello'; requestId: string; name: string };
 
 export type ExtensionToWebviewMessage =
+  | ({ type: 'host/review-finding-changed'; requestId?: never } & ReviewFindingChange)
+  | { type: 'host/review-refresh'; requestId?: never }
   | { type: 'host/snapshot'; snapshot: PanelSnapshot; requestId?: string }
   | { type: 'host/hello'; requestId: string; message: string; messageCount: number }
   | { type: 'host/action'; requestId: string }
+  | { type: 'host/ack'; requestId: string }
   | { type: 'host/bridge-head'; requestId: string; status: number; headers: Record<string, string> }
   | { type: 'host/bridge-chunk'; requestId: string; text: string }
   | { type: 'host/bridge-end'; requestId: string }
@@ -44,6 +58,10 @@ export function isFileReferenceId(value: unknown): value is string {
   return typeof value === 'string' && /^ref_[a-f0-9]{64}$/.test(value);
 }
 
+function isRepositoryUri(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= 8192;
+}
+
 export function isWebviewMessage(value: unknown): value is WebviewToExtensionMessage {
   if (!isRecord(value)) return false;
   switch (value.type) {
@@ -54,6 +72,41 @@ export function isWebviewMessage(value: unknown): value is WebviewToExtensionMes
     case 'bridge/cancel':
     case 'bridge/ack':
       return isRequestId(value.requestId);
+    case 'git/stage':
+    case 'git/unstage':
+      return (
+        isRequestId(value.requestId) &&
+        typeof value.repositoryUri === 'string' &&
+        value.repositoryUri.length > 0 &&
+        value.repositoryUri.length <= 8192 &&
+        typeof value.uri === 'string' &&
+        value.uri.length > 0 &&
+        value.uri.length <= 8192
+      );
+    case 'git/commit':
+      return (
+        isRequestId(value.requestId) &&
+        typeof value.repositoryUri === 'string' &&
+        value.repositoryUri.length > 0 &&
+        value.repositoryUri.length <= 8192 &&
+        typeof value.message === 'string' &&
+        value.message.trim().length > 0 &&
+        value.message.length <= 5000
+      );
+    case 'git/stage-all':
+    case 'git/unstage-all':
+      return isRequestId(value.requestId) && isRepositoryUri(value.repositoryUri);
+    case 'git/push':
+    case 'git/undo-commit':
+      return (
+        isRequestId(value.requestId) &&
+        isRepositoryUri(value.repositoryUri) &&
+        typeof value.branch === 'string' &&
+        value.branch.length > 0 &&
+        value.branch.length <= 1024 &&
+        typeof value.head === 'string' &&
+        /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.head)
+      );
     case 'bridge/request':
       return (
         isRequestId(value.requestId) &&
@@ -149,6 +202,15 @@ function isSnapshot(value: unknown): value is PanelSnapshot {
         typeof repository.rootUri === 'string' &&
         typeof repository.name === 'string' &&
         (repository.branch === null || typeof repository.branch === 'string') &&
+        (repository.sync === undefined ||
+          (isRecord(repository.sync) &&
+            (repository.sync.head === null ||
+              (typeof repository.sync.head === 'string' &&
+                /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(repository.sync.head))) &&
+            (repository.sync.upstream === null || typeof repository.sync.upstream === 'string') &&
+            (repository.sync.ahead === null || isCount(repository.sync.ahead)) &&
+            (repository.sync.behind === null || isCount(repository.sync.behind)) &&
+            typeof repository.sync.canUndo === 'boolean')) &&
         Array.isArray(repository.remotes) &&
         repository.remotes.every((remote: unknown) => typeof remote === 'string') &&
         Array.isArray(repository.changes) &&
@@ -162,6 +224,15 @@ function isSnapshot(value: unknown): value is PanelSnapshot {
 export function isExtensionMessage(value: unknown): value is ExtensionToWebviewMessage {
   if (!isRecord(value)) return false;
   switch (value.type) {
+    case 'host/review-refresh':
+      return value.requestId === undefined;
+    case 'host/review-finding-changed':
+      return (
+        value.requestId === undefined &&
+        typeof value.sessionId === 'string' &&
+        /^[\w-]{1,128}$/.test(value.sessionId) &&
+        reviewFindingSchema.safeParse(value.finding).success
+      );
     case 'host/snapshot':
       return (
         isSnapshot(value.snapshot) &&
@@ -174,6 +245,7 @@ export function isExtensionMessage(value: unknown): value is ExtensionToWebviewM
         isCount(value.messageCount)
       );
     case 'host/action':
+    case 'host/ack':
     case 'host/bridge-end':
       return isRequestId(value.requestId);
     case 'host/bridge-head':

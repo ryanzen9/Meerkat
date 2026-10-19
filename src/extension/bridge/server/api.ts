@@ -4,6 +4,7 @@ import { BridgeError, publicError } from '../errors';
 import type { BridgeRuntime } from '../runtime/bridgeRuntime';
 import { sessionInfo } from '../sessions/store';
 import { reasoningEfforts } from '../../../shared/agentModels';
+import { findingUpdateSchema, type ReviewFindingChange } from '../../../shared/review';
 
 const idSchema = z.string().min(1).max(128);
 const createSchema = z.object({ providerId: idSchema, model: idSchema }).strict();
@@ -53,6 +54,7 @@ export interface BridgeApiOptions {
   callbackUri: () => string;
   openBrowser: (url: string) => Promise<void>;
   log?: (code: string, status: number) => void;
+  onFindingChanged?: (change: ReviewFindingChange) => void;
 }
 export function createBridgeApi(options: BridgeApiOptions) {
   const { runtime } = options;
@@ -110,11 +112,30 @@ export function createBridgeApi(options: BridgeApiOptions) {
           });
         }
       }
-      const sessionMatch = path.match(/^\/v1\/sessions\/([\w-]+)(\/messages|\/reviews)?$/);
+      const findingMatch = path.match(/^\/v1\/sessions\/([\w-]+)\/reviews\/([a-f0-9]{64})$/);
+      if (findingMatch && method === 'POST') {
+        const update = await body(request, findingUpdateSchema);
+        const sessionId = findingMatch[1]!;
+        const finding = await runtime.sessions.reviews
+          .get(sessionId)
+          .updateFinding(findingMatch[2]!, update);
+        options.onFindingChanged?.({ sessionId, finding });
+        return Response.json(finding);
+      }
+      const sessionMatch = path.match(
+        /^\/v1\/sessions\/([\w-]+)(\/messages|\/reviews|\/release)?$/,
+      );
       if (sessionMatch) {
         const id = sessionMatch[1]!;
-        if (sessionMatch[2] === '/reviews' && method === 'GET')
-          return Response.json(runtime.sessions.get(id).reviews.snapshot());
+        if (sessionMatch[2] === '/release' && method === 'POST') {
+          await runtime.releaseSession(id);
+          return new Response(null, { status: 204 });
+        }
+        if (sessionMatch[2] === '/reviews' && method === 'GET') {
+          const reviews = runtime.sessions.reviews.get(id);
+          await reviews.flush();
+          return Response.json(reviews.snapshot());
+        }
         if (!sessionMatch[2] && method === 'GET')
           return Response.json(sessionInfo(runtime.sessions.get(id)));
         if (!sessionMatch[2] && method === 'DELETE') {

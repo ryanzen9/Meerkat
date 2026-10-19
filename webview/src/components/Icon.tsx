@@ -64,6 +64,8 @@ const paths = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
+  minus: <path d="M5 12h14" />,
+  undo: <path d="m9 5-5 5 5 5M4 10h9a7 7 0 0 1 7 7v2" />,
   copy: (
     <>
       <rect x="8" y="8" width="12" height="13" rx="2" />

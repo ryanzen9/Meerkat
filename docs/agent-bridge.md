@@ -28,7 +28,7 @@ Bridge 及其运行依赖在根工程的 `src/extension/` 与 `package.json` 中
 
 授权响应省略 `scope` 时使用本次请求的 scopes；显式返回空值或缩减权限仍会被拒绝。拒绝授权或回调验证失败会结束等待、显示安全的失败原因并允许立即重试，已有 active account 保留。
 
-选择历史会话时，模型选择框显示该会话绑定的模型；账户不匹配或模型不可用时给出提示。只有文字摘要、没有 Host 会话标识的旧历史，以及 Host 重启后失效的历史，需要新建会话。超过最近 20 个会话的限制时，面板会删除被移除的 Host 会话；失败的删除保存在 webview state 中，自动重试并在重新打开面板后继续处理。
+选择历史会话时，模型选择框显示该会话绑定的模型；账户不匹配或模型不可用时给出提示。只有文字摘要、没有 Host 会话标识的旧历史，以及 Host 重启后失效的历史，需要新建会话。面板保留全部历史，每次展示 20 条，可加载更多；超过最近 20 个会话时，通过 `POST /v1/sessions/:id/release` 释放较早会话的模型历史和内存上下文，保留已保存审查意见、解决状态、批注归档状态与代码快照。释放失败会持久化排队重试；旧版本因历史上限产生的待删除队列迁移为非破坏性的模型会话释放。释放后的历史可查看，继续模型对话需要新建会话。只有显式删除会话才清理审查归档。
 
 ## 从 HTTP API 验证真实推理
 
@@ -68,22 +68,24 @@ curl -N -D /tmp/meerkat-stream-headers "$BRIDGE_URL/v1/sessions/$BRIDGE_SESSION/
 
 除了 OAuth 浏览器回调，所有 HTTP 接口都需要 `Authorization: Bearer <本次进程的随机访问凭据>`。JSON 请求使用 `Content-Type: application/json`。
 
-| 方法         | 路径                        | 输入 / 输出                                                                                                 |
-| ------------ | --------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| GET          | `/v1/providers`             | Provider 描述与能力                                                                                         |
-| GET          | `/v1/providers/:id/auth`    | 登录状态、账户标识、授权 pending 与可选的安全 `signInError`；无令牌                                         |
-| POST         | `/v1/providers/:id/login`   | `{}` 新注册，或 `{accountId}` 复用保存的注册；Host 打开浏览器                                               |
-| GET          | `/auth/callback`            | 官方 OAuth query；验证 state 后交换 code，仅返回固定文本                                                    |
-| POST         | `/v1/providers/:id/logout`  | 清除本机凭据并返回 `remoteRevocationConfirmed`                                                              |
-| GET          | `/v1/providers/:id/models`  | 实时、账户隔离的 `{id,name,supportedReasoningEfforts,defaultReasoningEffort?}[]`                            |
-| POST         | `/v1/sessions`              | `{providerId,model}` → `201` 会话元数据                                                                     |
-| GET          | `/v1/sessions`              | 当前 Host 会话列表                                                                                          |
-| GET / DELETE | `/v1/sessions/:id`          | 元数据 / 取消关联运行并删除会话                                                                             |
-| GET          | `/v1/sessions/:id/reviews`  | 当前会话审查运行记录及已保存意见，用于刷新恢复                                                              |
-| POST         | `/v1/sessions/:id/messages` | `{text,reasoningEffort?,mode?:"chat"\|"review"}` → AI SDK UI Message SSE                                    |
-| POST         | `/v1/chat`                  | `{sessionId,messages:UIMessage[],reasoningEffort?,mode?:"chat"\|"review"}` → SSE，仅取最后的 text 用户 turn |
-| GET          | `/v1/runs/:id`              | `running / completed / incomplete / cancelled / failed`                                                     |
-| POST         | `/v1/runs/:id/cancel`       | 将 AbortSignal 传至 SDK 与本地工具                                                                          |
+| 方法         | 路径                                  | 输入 / 输出                                                                                                 |
+| ------------ | ------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| GET          | `/v1/providers`                       | Provider 描述与能力                                                                                         |
+| GET          | `/v1/providers/:id/auth`              | 登录状态、账户标识、授权 pending 与可选的安全 `signInError`；无令牌                                         |
+| POST         | `/v1/providers/:id/login`             | `{}` 新注册，或 `{accountId}` 复用保存的注册；Host 打开浏览器                                               |
+| GET          | `/auth/callback`                      | 官方 OAuth query；验证 state 后交换 code，仅返回固定文本                                                    |
+| POST         | `/v1/providers/:id/logout`            | 清除本机凭据并返回 `remoteRevocationConfirmed`                                                              |
+| GET          | `/v1/providers/:id/models`            | 实时、账户隔离的 `{id,name,supportedReasoningEfforts,defaultReasoningEffort?}[]`                            |
+| POST         | `/v1/sessions`                        | `{providerId,model}` → `201` 会话元数据                                                                     |
+| GET          | `/v1/sessions`                        | 当前 Host 会话列表                                                                                          |
+| GET / DELETE | `/v1/sessions/:id`                    | 元数据 / 取消关联运行并删除会话                                                                             |
+| POST         | `/v1/sessions/:id/release`            | 释放模型会话与内存上下文，保留审查意见、状态及引用快照                                                      |
+| GET          | `/v1/sessions/:id/reviews`            | 当前会话审查运行记录及已保存意见，用于刷新恢复                                                              |
+| POST         | `/v1/sessions/:id/reviews/:findingId` | `{status?,editorArchived?}` 更新解决或批注归档状态；至少一项，成功保存后通知界面                            |
+| POST         | `/v1/sessions/:id/messages`           | `{text,reasoningEffort?,mode?:"chat"\|"review"}` → AI SDK UI Message SSE                                    |
+| POST         | `/v1/chat`                            | `{sessionId,messages:UIMessage[],reasoningEffort?,mode?:"chat"\|"review"}` → SSE，仅取最后的 text 用户 turn |
+| GET          | `/v1/runs/:id`                        | `running / completed / incomplete / cancelled / failed`                                                     |
+| POST         | `/v1/runs/:id/cancel`                 | 将 AbortSignal 传至 SDK 与本地工具                                                                          |
 
 普通错误使用 `{error:{code,message}}` 和对应 HTTP 状态码。流开始后的错误转换为 AI SDK 的 `error` chunk；`data-run-state` 是 transient data part，携带 session/run 标识与状态。SSE 封装和 `[DONE]` 来自 AI SDK，Agent 文本、工具输入和工具输出转换来自 AI SDK 官方 `toUIMessageStream`。
 

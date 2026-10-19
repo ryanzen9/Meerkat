@@ -8,9 +8,31 @@ import type { ReviewChatMessage } from '../../src/shared/chat';
 import {
   interruptExpiredReviews,
   mergeReviewReceipt,
+  mergeReviewSnapshots,
   restoreReviewMessages,
 } from '../src/state/reviewReceipts';
 import { createSession, restoreReviewState, sessionMarkdown } from '../src/state/reviewState';
+
+test('finding status survives local restoration, delayed receipts and recovery without changing counts', () => {
+  const saved = receipts();
+  const finding = saved.findings[0]!;
+  const resolved = { ...finding, status: 'resolved' as const, statusRevision: 1 };
+  const updated = mergeReviewSnapshots(saved, { runs: [], findings: [resolved] });
+  const delayed = mergeReviewReceipt(updated, saved.runs[0]!, {
+    accepted: true,
+    duplicate: true,
+    finding,
+  });
+  expect(delayed.findings).toEqual([resolved]);
+  expect(delayed.runs[0]!.issueCount).toBe(1);
+  const session = { ...createSession(), reviews: delayed };
+  const restored = restoreReviewState({ sessions: [session, createSession()] });
+  expect(restored.sessions[0]!.reviews!.findings[0]!.status).toBe('resolved');
+  expect(restored.sessions[1]!.reviews).toBeUndefined();
+  const messages = restoreReviewMessages([], delayed);
+  const part = messages[0]!.parts.find((item) => item.type === 'tool-submit_review');
+  expect(part && 'output' in part ? part.output : undefined).toMatchObject({ finding: resolved });
+});
 
 function receipts(): ReviewSnapshotState {
   const runId = crypto.randomUUID();
@@ -145,6 +167,7 @@ test('exported reviews include saved issues and actual status without closing no
   run.summary = '审查未完成，已收录 1 条问题。';
   run.unfinishedItems = ['Remaining review work'];
   run.limitations = ['Static review only'];
+  saved.findings[0]!.status = 'resolved';
   const markdown = sessionMarkdown({
     ...createSession(),
     reviews: saved,
@@ -159,6 +182,7 @@ test('exported reviews include saved issues and actual status without closing no
     ],
   });
   expect(markdown).toContain('[P1] Missing check');
+  expect(markdown).toContain('状态：已解决');
   expect(markdown).toContain(run.summary);
   expect(markdown).not.toContain('Remaining review work');
   expect(markdown).not.toContain('Static review only');

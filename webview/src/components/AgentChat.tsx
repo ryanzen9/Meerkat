@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentPropsWithoutRef } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -24,6 +24,7 @@ import { cn } from '../lib/utils';
 import { isFileReferenceId } from '@shared/protocol';
 import type {
   FinishReviewInput,
+  FindingStatus,
   ReviewFinding,
   ReviewRunState,
   SubmitReviewInput,
@@ -42,16 +43,41 @@ interface ChatActions {
   openReference(referenceId: string): Promise<unknown>;
   openCode(code: string, language: string): Promise<unknown>;
   copy(text: string): Promise<unknown>;
+  findings: ReviewFinding[];
+  setFindingStatus(id: string, status: FindingStatus): Promise<void>;
+  setFindingArchived(id: string, archived: boolean): Promise<void>;
 }
 export const ChatActionsContext = createContext<ChatActions | null>(null);
 
 export function ReviewFindingCard({
   finding,
   openReference,
+  onStatusChange,
+  onArchiveChange,
 }: {
   finding: ReviewFinding;
   openReference(referenceId: string): Promise<unknown>;
+  onStatusChange?(status: FindingStatus): Promise<void>;
+  onArchiveChange?(archived: boolean): Promise<void>;
 }) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const pending = useRef(false);
+  const resolved = finding.status === 'resolved';
+  const saveChange = async (action: () => Promise<void>) => {
+    if (pending.current) return;
+    pending.current = true;
+    setSaving(true);
+    setError('');
+    try {
+      await action();
+    } catch {
+      setError('状态保存失败，请重试。');
+    } finally {
+      pending.current = false;
+      setSaving(false);
+    }
+  };
   // Tool results have no text-part scope for MarkdownTextPrimitive to read.
   const markdownComponents = useMemo<Components>(
     () => ({
@@ -70,6 +96,8 @@ export function ReviewFindingCard({
   return (
     <article
       data-review-finding={finding.id}
+      data-review-resolution={resolved ? 'resolved' : 'unresolved'}
+      data-review-archived={finding.editorArchived ? 'true' : 'false'}
       aria-label={`${finding.priority} ${finding.title}`}
       className="my-3 rounded-lg border border-widget bg-surface p-3"
     >
@@ -78,7 +106,9 @@ export function ReviewFindingCard({
           {finding.priority}
         </span>
         <h3 className="min-w-0 flex-1 text-sm font-semibold wrap-anywhere">{finding.title}</h3>
-        <span className="shrink-0 text-xs text-muted">已保存</span>
+        <span role="status" className="shrink-0 text-xs text-muted">
+          {resolved ? '已解决' : '未解决'}
+        </span>
       </div>
       <div className="min-w-0 text-sm leading-relaxed wrap-anywhere">
         <ReactMarkdown
@@ -105,6 +135,50 @@ export function ReviewFindingCard({
           </li>
         ))}
       </ul>
+      <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-widget pt-2">
+        <button
+          type="button"
+          aria-pressed={resolved}
+          disabled={saving || !onStatusChange}
+          className="flex items-center gap-1 rounded-sm px-2 py-1 text-xs text-link hover:bg-code"
+          onClick={() => {
+            if (onStatusChange)
+              void saveChange(() => onStatusChange(resolved ? 'unresolved' : 'resolved'));
+          }}
+        >
+          <Icon name={resolved ? 'undo' : 'check'} className="size-3.5" />
+          {saving ? '正在保存…' : resolved ? '标记为未解决' : '标记为已解决'}
+        </button>
+        {finding.editorArchived && (
+          <>
+            <span className="text-xs text-muted">批注已归档</span>
+            <button
+              type="button"
+              disabled={saving || !onArchiveChange}
+              className="flex items-center gap-1 rounded-sm px-2 py-1 text-xs text-link hover:bg-code"
+              onClick={() => {
+                if (onArchiveChange)
+                  void saveChange(async () => {
+                    await onArchiveChange(false);
+                    try {
+                      await openReference(finding.references[0]!.referenceId);
+                    } catch {
+                      setError('批注已恢复，暂时无法打开代码引用，请点击引用重试。');
+                    }
+                  });
+              }}
+            >
+              <Icon name="undo" className="size-3.5" />
+              恢复批注
+            </button>
+          </>
+        )}
+        {error && (
+          <p role="alert" className="text-xs text-error">
+            {error}
+          </p>
+        )}
+      </div>
     </article>
   );
 }
@@ -119,7 +193,15 @@ const ReviewFindingTool: ToolCallMessagePartComponent<
   if ('error' in result)
     return <p className="my-2 text-xs text-muted">意见尚未收录：{result.error.message}</p>;
   if (!result.accepted || result.finding.toolCallId !== toolCallId) return null;
-  return <ReviewFindingCard finding={result.finding} openReference={actions.openReference} />;
+  const finding = actions.findings.find((item) => item.id === result.finding.id) ?? result.finding;
+  return (
+    <ReviewFindingCard
+      finding={finding}
+      openReference={actions.openReference}
+      onStatusChange={(status) => actions.setFindingStatus(finding.id, status)}
+      onArchiveChange={(archived) => actions.setFindingArchived(finding.id, archived)}
+    />
+  );
 };
 const ReviewFinishTool: ToolCallMessagePartComponent<
   FinishReviewInput,

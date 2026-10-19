@@ -33,6 +33,9 @@ export function activate(context: vscode.ExtensionContext): void {
     git,
     bridge,
     referenceEditor,
+    bridge.onDidChangeFinding((change) => {
+      void provider.findingChanged(change);
+    }),
     vscode.commands.registerCommand('meerkat.chatgptSignIn', async () => {
       try {
         const response = await bridge!.request(

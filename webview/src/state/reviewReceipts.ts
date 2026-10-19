@@ -3,6 +3,22 @@ import type { ReviewRunState, ReviewSnapshotState, SubmitReviewResult } from '@s
 
 export const emptyReviews = (): ReviewSnapshotState => ({ runs: [], findings: [] });
 
+export function mergeReviewSnapshots(
+  previous: ReviewSnapshotState | undefined,
+  incoming: ReviewSnapshotState,
+): ReviewSnapshotState {
+  const runs = new Map(previous?.runs.map((run) => [run.id, run]));
+  const findings = new Map(previous?.findings.map((finding) => [finding.id, finding]));
+  for (const run of incoming.runs) runs.set(run.id, run);
+  for (const finding of incoming.findings) {
+    const existing = findings.get(finding.id);
+    // A delayed tool receipt or recovery response cannot undo a newer user action.
+    if (!existing || (finding.statusRevision ?? 0) >= (existing.statusRevision ?? 0))
+      findings.set(finding.id, finding);
+  }
+  return { runs: [...runs.values()], findings: [...findings.values()] };
+}
+
 export function interruptExpiredReviews(
   reviews?: ReviewSnapshotState,
 ): ReviewSnapshotState | undefined {
@@ -27,13 +43,7 @@ export function mergeReviewReceipt(
   run: ReviewRunState,
   result?: SubmitReviewResult,
 ): ReviewSnapshotState {
-  const state = previous ?? emptyReviews();
-  return {
-    runs: [...state.runs.filter(({ id }) => id !== run.id), run],
-    findings: result
-      ? [...state.findings.filter(({ id }) => id !== result.finding.id), result.finding]
-      : state.findings,
-  };
+  return mergeReviewSnapshots(previous, { runs: [run], findings: result ? [result.finding] : [] });
 }
 
 // Reconstruct only server receipts, never streamed args or model prose. The same

@@ -21,3 +21,11 @@ test('a hello response updates persisted state without losing workspace data', (
   expect(replied.snapshot?.state.messageCount).toBe(2);
   expect(replied.reply).toBe('Hello');
 });
+
+test('an acknowledgement for a superseded refresh preserves newer errors and Git state', () => {
+  const loaded = panelReducer(initialPanelState, { type: 'host/snapshot', snapshot });
+  const failed = panelReducer(loaded, { type: 'host/error', message: '推送失败，请重试。' });
+  const acknowledged = panelReducer(failed, { type: 'host/ack', requestId: 'older-refresh' });
+  expect(acknowledged.error).toBe('推送失败，请重试。');
+  expect(acknowledged.snapshot).toBe(snapshot);
+});

@@ -60,6 +60,12 @@ class TestHost {
   modelGate: Promise<AgentModel[]> | undefined;
   modelRequests = 0;
   git: PanelSnapshot['git'] = { available: false, repositories: [] };
+  gitActions: {
+    type: 'stage' | 'unstage' | 'commit' | 'stage-all' | 'unstage-all' | 'push' | 'undo-commit';
+    uri?: string;
+  }[] = [];
+  gitHistory = new Map<string, PanelSnapshot['git']['repositories'][number][]>();
+  commits: { repositoryUri: string; message: string }[] = [];
   includeTool = false;
   /** Tool calls the model asks for, one per streamed step before it answers. */
   toolRuns = 1;
@@ -68,7 +74,8 @@ class TestHost {
   reviewContext?: ReviewContext;
   reviewPlan?: (step: number, prompt: string) => TestModelChunk[];
   responseText?: string;
-  deleteFailures = 0;
+  releaseFailures = 0;
+  reviewStatusFailures = 0;
   copiedTexts: string[] = [];
   openedCode: { code: string; language: string }[] = [];
   openedFiles: string[] = [];
@@ -81,6 +88,7 @@ class TestHost {
   streamId = '';
   creations: ProviderSession[] = [];
   runs: { model: string; text: string; reasoningEffort?: ReasoningEffort }[] = [];
+  releases: string[] = [];
   deletes: string[] = [];
   operations = new Set<Promise<void>>();
   runtime: BridgeRuntime;
@@ -232,17 +240,30 @@ class TestHost {
     });
     const api = createBridgeApi({
       runtime: this.runtime,
+      onFindingChanged: (change) => this.post({ type: 'host/review-finding-changed', ...change }),
       callbackUri: () => 'http://127.0.0.1:1234/auth/callback',
       openBrowser: async () => {},
     });
     this.proxy = new WebviewBridgeProxy(
       async (path, method, body, signal) => {
-        if (method === 'DELETE') {
-          this.deletes.push(path.split('/').at(-1)!);
-          if (this.deleteFailures > 0) {
-            this.deleteFailures--;
+        if (
+          method === 'POST' &&
+          /\/reviews\/[a-f0-9]{64}$/.test(path) &&
+          this.reviewStatusFailures > 0
+        ) {
+          this.reviewStatusFailures--;
+          return Response.json(
+            { error: { code: 'review_save_failed', message: 'Save failed' } },
+            { status: 503 },
+          );
+        }
+        if (method === 'DELETE') this.deletes.push(path.split('/').at(-1)!);
+        if (method === 'POST' && path.endsWith('/release')) {
+          this.releases.push(path.split('/').at(-2)!);
+          if (this.releaseFailures > 0) {
+            this.releaseFailures--;
             return Response.json(
-              { error: { code: 'temporary_failure', message: 'Retry deletion' } },
+              { error: { code: 'temporary_failure', message: 'Retry release' } },
               { status: 503 },
             );
           }
@@ -261,6 +282,20 @@ class TestHost {
   }
   post(message: ExtensionToWebviewMessage): void {
     queueMicrotask(() => window.dispatchEvent(new MessageEvent('message', { data: message })));
+  }
+  private panelSnapshot(
+    requestId?: string,
+  ): Extract<ExtensionToWebviewMessage, { type: 'host/snapshot' }> {
+    return {
+      type: 'host/snapshot',
+      ...(requestId ? { requestId } : {}),
+      snapshot: {
+        workspace: { name: 'Fixture', folders: [], trusted: true },
+        settings: { greeting: '', showWorkspacePaths: true },
+        state: { messageCount: 0 },
+        git: this.git,
+      },
+    };
   }
   receive(message: WebviewToExtensionMessage): void {
     switch (message.type) {
@@ -299,16 +334,187 @@ class TestHost {
             : { type: 'host/action', requestId: message.requestId },
         );
         break;
+      case 'git/stage': {
+        this.gitActions.push({ type: 'stage', uri: message.uri });
+        const repository = this.git.repositories.find(
+          (item) => item.rootUri === message.repositoryUri,
+        );
+        const change = repository?.changes.find((item) => item.uri === message.uri);
+        if (!repository || !change) {
+          this.post({
+            type: 'host/error',
+            requestId: message.requestId,
+            message: '文件已不在 Changes 中。',
+          });
+          break;
+        }
+        this.git = {
+          ...this.git,
+          repositories: this.git.repositories.map((item) =>
+            item.rootUri === message.repositoryUri
+              ? {
+                  ...item,
+                  changes: item.changes.filter((file) => file.uri !== message.uri),
+                  stagedChanges: [
+                    ...item.stagedChanges.filter((file) => file.uri !== message.uri),
+                    change,
+                  ],
+                }
+              : item,
+          ),
+        };
+        this.post(this.panelSnapshot(message.requestId));
+        break;
+      }
+      case 'git/unstage': {
+        this.gitActions.push({ type: 'unstage', uri: message.uri });
+        const repository = this.git.repositories.find(
+          (item) => item.rootUri === message.repositoryUri,
+        );
+        const change = repository?.stagedChanges.find((item) => item.uri === message.uri);
+        if (!repository || !change) {
+          this.post({
+            type: 'host/error',
+            requestId: message.requestId,
+            message: '文件已不在 Staged Changes 中。',
+          });
+          break;
+        }
+        this.git = {
+          ...this.git,
+          repositories: this.git.repositories.map((item) =>
+            item.rootUri === message.repositoryUri
+              ? {
+                  ...item,
+                  stagedChanges: item.stagedChanges.filter((file) => file.uri !== message.uri),
+                  changes: [...item.changes.filter((file) => file.uri !== message.uri), change],
+                }
+              : item,
+          ),
+        };
+        this.post(this.panelSnapshot(message.requestId));
+        break;
+      }
+      case 'git/commit': {
+        this.gitActions.push({ type: 'commit' });
+        const repository = this.git.repositories.find(
+          (item) => item.rootUri === message.repositoryUri,
+        );
+        if (!repository || !repository.stagedChanges.length) {
+          this.post({
+            type: 'host/error',
+            requestId: message.requestId,
+            message: '暂存区为空。',
+          });
+          break;
+        }
+        this.commits.push({ repositoryUri: message.repositoryUri, message: message.message });
+        const history = this.gitHistory.get(message.repositoryUri) ?? [];
+        history.push(repository);
+        this.gitHistory.set(message.repositoryUri, history);
+        this.git = {
+          ...this.git,
+          repositories: this.git.repositories.map((item) =>
+            item.rootUri === message.repositoryUri
+              ? {
+                  ...item,
+                  stagedChanges: [],
+                  sync: {
+                    head: this.commits.length.toString(16).padStart(40, '0'),
+                    upstream: item.sync?.upstream ?? null,
+                    ahead: (item.sync?.ahead ?? 0) + 1,
+                    behind: item.sync?.behind ?? 0,
+                    canUndo: true,
+                  },
+                }
+              : item,
+          ),
+        };
+        this.post(this.panelSnapshot(message.requestId));
+        break;
+      }
+      case 'git/stage-all':
+      case 'git/unstage-all': {
+        const stage = message.type === 'git/stage-all';
+        this.gitActions.push({ type: stage ? 'stage-all' : 'unstage-all' });
+        this.git = {
+          ...this.git,
+          repositories: this.git.repositories.map((item) => {
+            if (item.rootUri !== message.repositoryUri) return item;
+            const source = stage ? 'changes' : 'stagedChanges';
+            const target = stage ? 'stagedChanges' : 'changes';
+            const moving = item[source].filter((file) => !stage || file.kind !== 'conflict');
+            return {
+              ...item,
+              [source]: item[source].filter((file) => !moving.includes(file)),
+              [target]: [
+                ...item[target].filter((file) => !moving.some((change) => change.uri === file.uri)),
+                ...moving,
+              ],
+            };
+          }),
+        };
+        this.post(this.panelSnapshot(message.requestId));
+        break;
+      }
+      case 'git/push':
+      case 'git/undo-commit': {
+        const repository = this.git.repositories.find(
+          (item) => item.rootUri === message.repositoryUri,
+        );
+        if (
+          !repository ||
+          repository.branch !== message.branch ||
+          repository.sync?.head !== message.head
+        ) {
+          this.post({
+            type: 'host/error',
+            requestId: message.requestId,
+            message: '当前分支或提交已变化，请刷新后重试。',
+          });
+          break;
+        }
+        this.gitActions.push({ type: message.type === 'git/push' ? 'push' : 'undo-commit' });
+        const previous =
+          message.type === 'git/undo-commit'
+            ? this.gitHistory.get(message.repositoryUri)?.pop()
+            : undefined;
+        this.git = {
+          ...this.git,
+          repositories: this.git.repositories.map((item) => {
+            if (item.rootUri !== message.repositoryUri) return item;
+            if (message.type === 'git/push')
+              return {
+                ...item,
+                sync: {
+                  ...item.sync!,
+                  upstream: item.sync!.upstream ?? `${item.remotes[0]}/${item.branch}`,
+                  ahead: 0,
+                  canUndo: false,
+                },
+              };
+            if (!previous) return item;
+            return {
+              ...item,
+              stagedChanges: [
+                ...previous.stagedChanges.filter(
+                  (file) => !item.stagedChanges.some((current) => current.uri === file.uri),
+                ),
+                ...item.stagedChanges,
+              ],
+              sync: {
+                ...previous.sync!,
+                ahead: Math.max(0, (item.sync!.ahead ?? 0) - 1),
+                canUndo: (this.gitHistory.get(item.rootUri)?.length ?? 0) > 0,
+              },
+            };
+          }),
+        };
+        this.post(this.panelSnapshot(message.requestId));
+        break;
+      }
       case 'webview/ready':
-        this.post({
-          type: 'host/snapshot',
-          snapshot: {
-            workspace: { name: 'Fixture', folders: [], trusted: true },
-            settings: { greeting: '', showWorkspacePaths: true },
-            state: { messageCount: 0 },
-            git: this.git,
-          },
-        });
+        this.post(this.panelSnapshot());
         break;
       default:
         break;
@@ -411,6 +617,27 @@ const mount = () => render(createElement(StrictMode, null, createElement(App)));
 type View = ReturnType<typeof mount>;
 function openSettingsMenu(view: View) {
   fireEvent.click(view.getByRole('button', { name: '设置菜单' }));
+}
+function createDataTransfer(): DataTransfer {
+  const values = new Map<string, string>();
+  const types: string[] = [];
+  return {
+    types,
+    effectAllowed: 'none',
+    dropEffect: 'none',
+    setData(type: string, value: string) {
+      values.set(type, value);
+      if (!types.includes(type)) types.push(type);
+    },
+    getData(type: string) {
+      return values.get(type) ?? '';
+    },
+  } as unknown as DataTransfer;
+}
+function dispatchDrag(target: Element, type: string, transfer: DataTransfer) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', { value: transfer });
+  target.dispatchEvent(event);
 }
 
 test('Webview transport resets inactivity on each response chunk', async () => {
@@ -839,6 +1066,27 @@ for (const outcome of ['completed', 'incomplete', 'cancelled', 'failed'] as cons
     );
     expect(view.container.querySelectorAll('[data-review-finding]')).toHaveLength(1);
     expect(view.getByRole('article').closest('[data-slot="tool-timeline"]')).toBeNull();
+    expect(within(view.getByRole('article')).getByText('未解决')).toBeDefined();
+    if (outcome === 'completed') {
+      host.reviewStatusFailures = 1;
+      fireEvent.click(view.getByRole('button', { name: '标记为已解决' }));
+      await waitFor(() =>
+        expect(view.getByRole('alert').textContent).toBe('状态保存失败，请重试。'),
+      );
+      expect(within(view.getByRole('article')).getByText('未解决')).toBeDefined();
+    }
+    await act(async () => {
+      const resolve = view.getByRole('button', { name: '标记为已解决' });
+      fireEvent.click(resolve);
+      fireEvent.click(resolve);
+    });
+    await waitFor(() =>
+      expect(within(view.getByRole('article')).getByText('已解决')).toBeDefined(),
+    );
+    expect(restoreReviewState(host.savedState).sessions[0]!.reviews!.findings[0]).toMatchObject({
+      status: 'resolved',
+      statusRevision: 1,
+    });
     await waitFor(() =>
       expect(restoreReviewState(host.savedState).sessions[0]!.reviews?.findings).toHaveLength(1),
     );
@@ -899,10 +1147,117 @@ for (const outcome of ['completed', 'incomplete', 'cancelled', 'failed'] as cons
     await waitFor(() => expect(restored.getByText(summary)).toBeDefined());
     expect(restored.container.querySelectorAll('[data-review-finding]')).toHaveLength(1);
     expect(restored.getByRole('article', { name: 'P1 Unchecked value' })).toBeDefined();
+    expect(within(restored.getByRole('article')).getByText('已解决')).toBeDefined();
+    fireEvent.click(restored.getByRole('button', { name: '标记为未解决' }));
+    await waitFor(() =>
+      expect(within(restored.getByRole('article')).getByText('未解决')).toBeDefined(),
+    );
+    expect(host.runtime.sessions.list()[0]!.reviews.snapshot().findings[0]).toMatchObject({
+      status: 'unresolved',
+      statusRevision: 2,
+    });
     expect(restored.container.querySelector('[data-review-status]')?.textContent).toBe(summary);
     fireEvent.click(restored.getByRole('link', { name: `${path}:2` }));
     await waitFor(() => expect(host.openedReferences).toHaveLength(3));
     expect(calls).toBe(6);
+    if (outcome === 'completed') {
+      const owner = restoreReviewState(host.savedState).sessions[0]!;
+      const journal = host.runtime.sessions.get(owner.bridgeSessionId!).reviews;
+      const findingId = journal.snapshot().findings[0]!.id;
+      const nativeResolved = await journal.setFindingStatus(findingId, 'resolved');
+      host.post({
+        type: 'host/review-finding-changed',
+        sessionId: owner.bridgeSessionId!,
+        finding: nativeResolved,
+      });
+      await waitFor(() =>
+        expect(within(restored.getByRole('article')).getByText('已解决')).toBeDefined(),
+      );
+      await act(async () => {
+        host.post({
+          type: 'host/review-finding-changed',
+          sessionId: owner.bridgeSessionId!,
+          finding: { ...nativeResolved, status: 'unresolved', statusRevision: 0 },
+        });
+        host.post({
+          type: 'host/review-finding-changed',
+          sessionId: randomUUID(),
+          finding: { ...nativeResolved, status: 'unresolved', statusRevision: 100 },
+        });
+        host.post({
+          type: 'host/review-finding-changed',
+          sessionId: owner.bridgeSessionId!,
+          finding: { ...nativeResolved, id: 'f'.repeat(64), title: 'Unsubmitted issue' },
+        });
+      });
+      expect(within(restored.getByRole('article')).getByText('已解决')).toBeDefined();
+      expect(restored.container.querySelectorAll('[data-review-finding]')).toHaveLength(1);
+      const nativeArchived = await journal.updateFinding(findingId, { editorArchived: true });
+      host.post({
+        type: 'host/review-finding-changed',
+        sessionId: owner.bridgeSessionId!,
+        finding: nativeArchived,
+      });
+      await waitFor(() => expect(restored.getByText('批注已归档')).toBeDefined());
+      expect(within(restored.getByRole('article')).getByText('已解决')).toBeDefined();
+      expect(restored.getByRole('link', { name: `${path}:2` })).toBeDefined();
+      await act(async () => {
+        host.post({
+          type: 'host/review-finding-changed',
+          sessionId: owner.bridgeSessionId!,
+          finding: nativeResolved,
+        });
+      });
+      expect(restored.getByText('批注已归档')).toBeDefined();
+      const cached = restoreReviewState(host.savedState);
+      expect(cached.sessions[0]!.reviews!.findings[0]!.editorArchived).toBe(true);
+      host.reviewStatusFailures = 1;
+      await waitFor(() =>
+        expect(
+          (restored.getByRole('button', { name: '恢复批注' }) as HTMLButtonElement).disabled,
+        ).toBe(false),
+      );
+      fireEvent.click(restored.getByRole('button', { name: '恢复批注' }));
+      await waitFor(() => expect(restored.getByText('状态保存失败，请重试。')).toBeDefined());
+      expect(restored.getByText('批注已归档')).toBeDefined();
+      await waitFor(() =>
+        expect(
+          (restored.getByRole('button', { name: '恢复批注' }) as HTMLButtonElement).disabled,
+        ).toBe(false),
+      );
+      fireEvent.click(restored.getByRole('button', { name: '恢复批注' }));
+      await waitFor(() => expect(restored.queryByText('批注已归档') === null).toBe(true));
+      await waitFor(() => expect(host.openedReferences).toHaveLength(4));
+      expect(journal.snapshot().findings[0]).toMatchObject({
+        status: 'resolved',
+        editorArchived: false,
+      });
+      await journal.setFindingStatus(findingId, 'unresolved');
+      host.post({ type: 'host/review-refresh' });
+      await waitFor(() =>
+        expect(within(restored.getByRole('article')).getByText('未解决')).toBeDefined(),
+      );
+      expect(calls).toBe(6);
+      // Old conversations from before the archive was introduced retain their
+      // receipts and user-controlled state even when their Host has expired.
+      await host.runtime.deleteSession(owner.bridgeSessionId!);
+      fireEvent.click(restored.getByRole('button', { name: '标记为已解决' }));
+      await waitFor(() =>
+        expect(within(restored.getByRole('article')).getByText('已解决')).toBeDefined(),
+      );
+      fireEvent.click(restored.getByRole('button', { name: '新建会话' }));
+      await waitFor(() => expect(restored.queryByRole('article')).toBeNull());
+      fireEvent.click(restored.getByRole('tab', { name: 'History' }));
+      fireEvent.click(restored.getByRole('button', { name: /Review changes incrementally/ }));
+      await waitFor(() =>
+        expect(within(restored.getByRole('article')).getByText('已解决')).toBeDefined(),
+      );
+      expect(
+        restoreReviewState(host.savedState).sessions.find((item) => item.id === owner.id)!.reviews!
+          .findings[0]!.status,
+      ).toBe('resolved');
+      expect(restored.container.querySelectorAll('[data-review-finding]')).toHaveLength(1);
+    }
   });
 }
 
@@ -1818,7 +2173,8 @@ for (const unavailable of ['model', 'account'] as const) {
   });
 }
 
-test('more than 100 UI conversations reclaim evicted Host sessions under StrictMode', async () => {
+// Allow a bounded minute for 105 complete SDK/UI round trips on slower test hosts.
+test('more than 100 UI conversations release old model sessions while retaining conversations under StrictMode', async () => {
   const view = mount();
   await connected(view);
   for (let index = 0; index < 105; index++) {
@@ -1828,11 +2184,18 @@ test('more than 100 UI conversations reclaim evicted Host sessions under StrictM
   }
   expect(host.creations).toHaveLength(105);
   expect(host.runtime.sessions.list()).toHaveLength(20);
-  expect(restoreReviewState(host.savedState).sessions).toHaveLength(20);
-  expect(restoreReviewState(host.savedState).pendingBridgeSessionDeletes).toEqual([]);
-}, 30000);
+  expect(restoreReviewState(host.savedState).sessions).toHaveLength(105);
+  expect(restoreReviewState(host.savedState).pendingBridgeSessionReleases).toEqual([]);
+  expect(host.deletes).toEqual([]);
+  fireEvent.click(view.getByRole('tab', { name: 'History' }));
+  expect(view.queryByRole('button', { name: /turn-0/ }) === null).toBe(true);
+  for (let page = 0; page < 5; page++)
+    fireEvent.click(view.getByRole('button', { name: '加载更多会话' }));
+  fireEvent.click(view.getByRole('button', { name: /turn-0/ }));
+  await waitFor(() => expect(view.getByText('answer:model-a:1')).toBeDefined());
+}, 60000);
 
-test('failed eviction deletion survives reload and retries; already missing Host IDs are acknowledged', async () => {
+test('failed model release survives reload and retries without deleting reviews; legacy cleanup queues migrate safely', async () => {
   const sessions = Array.from({ length: 20 }, (_value, index) => {
     const bound = host.runtime.sessions.create('openai-agents', {
       model: 'model-a',
@@ -1852,23 +2215,29 @@ test('failed eviction deletion survives reload and retries; already missing Host
   });
   host.savedState = restoreReviewState({ sessions, activeSessionId: sessions[19]!.id });
   const evictedId = sessions[0]!.bridgeSessionId!;
-  host.deleteFailures = 2;
+  host.releaseFailures = 2;
   let view = mount();
   await connected(view);
   fireEvent.click(view.getByRole('button', { name: '新建会话' }));
-  await waitFor(() => expect(host.deletes).toContain(evictedId));
+  await waitFor(() => expect(host.releases).toContain(evictedId));
   await waitFor(() =>
-    expect(restoreReviewState(host.savedState).pendingBridgeSessionDeletes).toContain(evictedId),
+    expect(restoreReviewState(host.savedState).pendingBridgeSessionReleases).toContain(evictedId),
   );
-  await waitFor(() => expect(view.getByRole('alert').textContent).toContain('历史会话清理失败'));
+  await waitFor(() =>
+    expect(view.getByRole('alert').textContent).toContain('历史模型会话释放失败'),
+  );
   await act(async () => cleanup());
-  host.deleteFailures = 0;
+  host.releaseFailures = 0;
   view = mount();
   await connected(view);
   await waitFor(() =>
-    expect(restoreReviewState(host.savedState).pendingBridgeSessionDeletes).toEqual([]),
+    expect(restoreReviewState(host.savedState).pendingBridgeSessionReleases).toEqual([]),
   );
   expect(() => host.runtime.sessions.get(evictedId)).toThrow('not found');
+  expect(
+    restoreReviewState(host.savedState).sessions.some((item) => item.bridgeSessionId === evictedId),
+  ).toBe(true);
+  expect(host.deletes).toEqual([]);
   await act(async () => cleanup());
   host.savedState = {
     ...restoreReviewState(host.savedState),
@@ -1877,7 +2246,7 @@ test('failed eviction deletion survives reload and retries; already missing Host
   view = mount();
   await connected(view);
   await waitFor(() =>
-    expect(restoreReviewState(host.savedState).pendingBridgeSessionDeletes).toEqual([]),
+    expect(restoreReviewState(host.savedState).pendingBridgeSessionReleases).toEqual([]),
   );
   expect(view.queryByRole('alert')).toBeNull();
 });
@@ -1892,6 +2261,13 @@ const gitRepository: PanelSnapshot['git']['repositories'][number] = {
     { uri: 'file:///repo/src/b.ts', path: 'src/b.ts', kind: 'added' },
   ],
   stagedChanges: [{ uri: 'file:///repo/src/c.ts', path: 'src/c.ts', kind: 'deleted' }],
+  sync: {
+    head: 'a'.repeat(40),
+    upstream: 'origin/feat/webview-layout',
+    ahead: 0,
+    behind: 0,
+    canUndo: false,
+  },
 };
 
 test('workspace context moves into Files while the Thread keeps one Git summary line', async () => {
@@ -1917,7 +2293,10 @@ test('workspace context moves into Files while the Thread keeps one Git summary 
   fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
   const filesTab = within(files);
   expect(filesTab.getByText('review-bot')).toBeDefined();
-  expect(filesTab.getByText('Idle')).toBeDefined();
+  expect(filesTab.getByText('feat/webview-layout')).toBeDefined();
+  expect(filesTab.getByText('3 changed')).toBeDefined();
+  expect(filesTab.queryByText('与 Source Control 同步 · 点击文件打开')).toBeNull();
+  expect(filesTab.getByRole('textbox', { name: '提交消息' })).toBeDefined();
 
   // Both groups start expanded, one row per file.
   const changes = filesTab.getByRole('button', { name: /^Changes/ });
@@ -1927,6 +2306,8 @@ test('workspace context moves into Files while the Thread keeps one Git summary 
   expect(filesTab.getByRole('button', { name: '修改 src/a.ts' })).toBeDefined();
   expect(filesTab.getByRole('button', { name: '新增 src/b.ts' })).toBeDefined();
   expect(filesTab.getByRole('button', { name: '删除 src/c.ts' })).toBeDefined();
+  expect(filesTab.getByRole('button', { name: '暂存 src/b.ts' })).toBeDefined();
+  expect(filesTab.getByRole('button', { name: '移回 Changes src/c.ts' })).toBeDefined();
 
   // Collapsing one group hides only its own rows and can be reopened.
   fireEvent.click(changes);
@@ -1939,15 +2320,358 @@ test('workspace context moves into Files while the Thread keeps one Git summary 
   fireEvent.click(staged);
   expect(files.querySelector<HTMLElement>('#change-group-staged-changes')!.hidden).toBe(true);
 
-  // The context header collapses to its summary row.
-  fireEvent.click(filesTab.getByRole('button', { name: '收起工作区上下文' }));
-  const toggle = filesTab.getByRole('button', { name: '展开工作区上下文' });
-  expect(toggle.getAttribute('aria-expanded')).toBe('false');
-  expect(files.querySelector<HTMLElement>('#review-context-details')!.hidden).toBe(true);
-
   await act(async () => {
     fireEvent.click(filesTab.getByRole('button', { name: '修改 src/a.ts' }));
     await host.settle();
   });
   expect(host.openedFiles).toEqual(['file:///repo/src/a.ts']);
+});
+
+test('Changes and Staged Changes support stage, unstage and commit actions', async () => {
+  host.git = { available: true, repositories: [gitRepository] };
+  const view = mount();
+  await connected(view);
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  const files = within(view.container.querySelector<HTMLElement>('#panel-files')!);
+
+  fireEvent.click(files.getByRole('button', { name: '暂存 src/b.ts' }));
+  await waitFor(() =>
+    expect(host.git.repositories[0]!.stagedChanges.map(({ path }) => path)).toContain('src/b.ts'),
+  );
+  fireEvent.click(files.getByRole('button', { name: '移回 Changes src/c.ts' }));
+  await waitFor(() =>
+    expect(host.git.repositories[0]!.changes.map(({ path }) => path)).toContain('src/c.ts'),
+  );
+
+  const message = files.getByRole('textbox', { name: '提交消息' }) as HTMLInputElement;
+  fireEvent.change(message, { target: { value: 'Stage the new file' } });
+  const submit = files.getByRole('button', { name: '提交已暂存更改 (1)' });
+  expect((submit as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(submit);
+  await waitFor(() =>
+    expect(host.commits).toEqual([
+      { repositoryUri: 'file:///repo', message: 'Stage the new file' },
+    ]),
+  );
+  expect(host.git.repositories[0]!.stagedChanges).toEqual([]);
+  expect(message.value).toBe('');
+});
+
+test('files can be dragged between Changes and Staged Changes', async () => {
+  host.git = { available: true, repositories: [gitRepository] };
+  const view = mount();
+  await connected(view);
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  const files = view.container.querySelector<HTMLElement>('#panel-files')!;
+  const drag = async (fileName: string, to: string) => {
+    await act(async () => {
+      const button = within(files).getByRole('button', { name: fileName });
+      const item = button.closest('li')!;
+      const transfer = createDataTransfer();
+      dispatchDrag(item, 'dragstart', transfer);
+      dispatchDrag(files.querySelector(`[data-drop-target="${to}"]`)!, 'dragover', transfer);
+      dispatchDrag(files.querySelector(`[data-drop-target="${to}"]`)!, 'drop', transfer);
+      await Promise.resolve();
+    });
+  };
+
+  await drag('新增 src/b.ts', 'staged-changes');
+  await waitFor(() =>
+    expect(host.gitActions).toEqual([{ type: 'stage', uri: 'file:///repo/src/b.ts' }]),
+  );
+  await waitFor(() =>
+    expect(host.git.repositories[0]!.stagedChanges.map(({ path }) => path)).toContain('src/b.ts'),
+  );
+  await drag('新增 src/b.ts', 'changes');
+  await waitFor(() =>
+    expect(host.git.repositories[0]!.changes.map(({ path }) => path)).toContain('src/b.ts'),
+  );
+});
+
+test('a slow commit locks index mutations, avoids timeouts and keeps drafts scoped to each repository', async () => {
+  const second = {
+    ...gitRepository,
+    rootUri: 'file:///other',
+    name: 'other',
+    changes: [],
+    stagedChanges: [{ uri: 'file:///other/a.ts', path: 'a.ts', kind: 'added' as const }],
+  };
+  host.git = { available: true, repositories: [gitRepository, second] };
+  const view = mount();
+  await connected(view);
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  const panel = view.container.querySelector<HTMLElement>('#panel-files')!;
+  const files = within(panel);
+  const receive = host.receive.bind(host);
+  const requests: Extract<WebviewToExtensionMessage, { type: 'git/commit' }>[] = [];
+  host.receive = (message) => {
+    if (message.type === 'git/commit') requests.push(message);
+    else receive(message);
+  };
+  fireEvent.change(files.getByRole('textbox', { name: '提交消息' }), {
+    target: { value: 'first draft' },
+  });
+  // Accelerate the old 15s timeout so this covers the behavior of a long-running hook.
+  const setTimeout = globalThis.setTimeout;
+  try {
+    globalThis.setTimeout = ((...args: Parameters<typeof setTimeout>) => {
+      const [handler, delay, ...rest] = args;
+      return setTimeout(handler, delay === 15000 ? 0 : delay, ...rest);
+    }) as typeof setTimeout;
+    await act(async () => {
+      fireEvent.submit(files.getByRole('form', { name: '提交暂存更改' }));
+      fireEvent.submit(files.getByRole('form', { name: '提交暂存更改' }));
+      await Bun.sleep(5);
+    });
+  } finally {
+    globalThis.setTimeout = setTimeout;
+  }
+  expect(requests).toHaveLength(1);
+  expect((files.getByRole('textbox', { name: '提交消息' }) as HTMLInputElement).disabled).toBe(
+    true,
+  );
+  expect((files.getByRole('button', { name: '暂存 src/a.ts' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  expect(
+    (files.getByRole('button', { name: '移回 Changes src/c.ts' }) as HTMLButtonElement).disabled,
+  ).toBe(true);
+  expect(
+    files.getByRole('button', { name: '修改 src/a.ts' }).closest('li')!.getAttribute('draggable'),
+  ).toBe('false');
+  expect(view.queryByRole('alert')).toBeNull();
+
+  fireEvent.change(files.getByRole('combobox', { name: '选择 Git 仓库' }), {
+    target: { value: second.rootUri },
+  });
+  expect((files.getByRole('textbox', { name: '提交消息' }) as HTMLInputElement).value).toBe('');
+  fireEvent.change(files.getByRole('textbox', { name: '提交消息' }), {
+    target: { value: 'second draft' },
+  });
+  await act(async () => {
+    receive(requests[0]!);
+  });
+  await waitFor(() => expect(host.commits).toHaveLength(1));
+  expect((files.getByRole('textbox', { name: '提交消息' }) as HTMLInputElement).value).toBe(
+    'second draft',
+  );
+  fireEvent.change(files.getByRole('combobox', { name: '选择 Git 仓库' }), {
+    target: { value: gitRepository.rootUri },
+  });
+  expect((files.getByRole('textbox', { name: '提交消息' }) as HTMLInputElement).value).toBe('');
+  fireEvent.change(files.getByRole('combobox', { name: '选择 Git 仓库' }), {
+    target: { value: second.rootUri },
+  });
+  fireEvent.submit(files.getByRole('form', { name: '提交暂存更改' }));
+  expect(requests).toHaveLength(2);
+  await act(async () => {
+    host.post({ type: 'host/error', requestId: requests[1]!.requestId, message: '提交钩子失败。' });
+  });
+  await waitFor(() => expect(view.getByRole('alert').textContent).toBe('提交钩子失败。'));
+  expect((files.getByRole('textbox', { name: '提交消息' }) as HTMLInputElement).value).toBe(
+    'second draft',
+  );
+  expect(
+    (files.getByRole('button', { name: '提交已暂存更改 (1)' }) as HTMLButtonElement).disabled,
+  ).toBe(false);
+});
+
+test('Files reject invalid drags and duplicate mutations, and commits respect conflicts and IME', async () => {
+  host.git = { available: true, repositories: [gitRepository] };
+  const view = mount();
+  await connected(view);
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  const panel = view.container.querySelector<HTMLElement>('#panel-files')!;
+  const files = within(panel);
+  const target = panel.querySelector('[data-drop-target="staged-changes"]')!;
+  for (const value of [
+    'invalid json',
+    JSON.stringify({
+      repositoryUri: 'file:///other',
+      source: 'changes',
+      uri: 'file:///repo/src/b.ts',
+    }),
+    JSON.stringify({
+      repositoryUri: 'file:///repo',
+      source: 'staged-changes',
+      uri: 'file:///repo/src/b.ts',
+    }),
+    JSON.stringify({
+      repositoryUri: 'file:///repo',
+      source: 'changes',
+      uri: 'file:///outside/secret',
+    }),
+  ]) {
+    const transfer = createDataTransfer();
+    transfer.setData('application/x-meerkat-git-change', value);
+    await act(async () => {
+      dispatchDrag(target, 'drop', transfer);
+    });
+  }
+  expect(host.gitActions).toEqual([]);
+
+  await act(async () => {
+    const button = files.getByRole('button', { name: '暂存 src/b.ts' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    await Promise.resolve();
+  });
+  await waitFor(() =>
+    expect(host.gitActions).toEqual([{ type: 'stage', uri: 'file:///repo/src/b.ts' }]),
+  );
+  const input = files.getByRole('textbox', { name: '提交消息' });
+  fireEvent.change(input, { target: { value: '中文提交' } });
+  expect(fireEvent.keyDown(input, { key: 'Enter', isComposing: true })).toBe(false);
+  expect(fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })).toBe(false);
+  expect(host.commits).toEqual([]);
+
+  host.git = {
+    available: true,
+    repositories: [
+      { ...gitRepository, changes: [{ ...gitRepository.changes[0]!, kind: 'conflict' }] },
+    ],
+  };
+  await act(async () => {
+    host.receive({ type: 'webview/ready' });
+  });
+  await waitFor(() =>
+    expect(files.getByRole('button', { name: '请先解决并暂存冲突' })).toBeDefined(),
+  );
+  fireEvent.submit(files.getByRole('form', { name: '提交暂存更改' }));
+  expect(host.commits).toEqual([]);
+});
+
+test('section headers bulk-stage and unstage without toggling their disclosure', async () => {
+  host.git = { available: true, repositories: [gitRepository] };
+  const view = mount();
+  await connected(view);
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  const files = within(view.container.querySelector<HTMLElement>('#panel-files')!);
+  const changes = files.getByRole('button', { name: 'Changes 2' });
+  await act(async () => {
+    const bulk = files.getByRole('button', { name: '暂存全部更改' });
+    fireEvent.click(bulk);
+    fireEvent.click(bulk);
+    await Promise.resolve();
+  });
+  await waitFor(() => expect(host.git.repositories[0]!.stagedChanges).toHaveLength(3));
+  expect(host.gitActions).toEqual([{ type: 'stage-all' }]);
+  expect(changes.getAttribute('aria-expanded')).toBe('true');
+  expect((files.getByRole('button', { name: '暂存全部更改' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  fireEvent.click(files.getByRole('button', { name: '取消全部暂存' }));
+  await waitFor(() => expect(host.git.repositories[0]!.stagedChanges).toHaveLength(0));
+  expect(host.git.repositories[0]!.changes).toHaveLength(3);
+  expect(host.gitActions).toEqual([{ type: 'stage-all' }, { type: 'unstage-all' }]);
+  expect((files.getByRole('button', { name: '取消全部暂存' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+});
+
+test('commit switches to push, undo restores staged changes, and outgoing counts recover from the host', async () => {
+  host.git = { available: true, repositories: [gitRepository] };
+  let view = mount();
+  await connected(view);
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  let files = within(view.container.querySelector<HTMLElement>('#panel-files')!);
+  const commit = async (message: string, count: number) => {
+    fireEvent.change(files.getByRole('textbox', { name: '提交消息' }), {
+      target: { value: message },
+    });
+    fireEvent.click(files.getByRole('button', { name: `提交已暂存更改 (${count})` }));
+    await waitFor(() =>
+      expect(files.getByRole('button', { name: /^推送 \(\d+ 个提交\)$/ })).toBeDefined(),
+    );
+  };
+  await commit('first', 1);
+  expect(files.getByRole('button', { name: '推送 (1 个提交)' })).toBeDefined();
+  expect(files.queryByText(/^未推送 /)).toBeNull();
+  fireEvent.click(files.getByRole('button', { name: '暂存 src/a.ts' }));
+  await waitFor(() => expect(host.git.repositories[0]!.stagedChanges).toHaveLength(1));
+  fireEvent.click(files.getByRole('button', { name: '取消上次提交' }));
+  await waitFor(() => expect(host.git.repositories[0]!.stagedChanges).toHaveLength(2));
+  expect(host.git.repositories[0]!.changes.map((file) => file.path)).toContain('src/b.ts');
+  expect(files.getByRole('button', { name: '提交已暂存更改 (2)' })).toBeDefined();
+  await commit('redo', 2);
+  fireEvent.click(files.getByRole('button', { name: '暂存 src/b.ts' }));
+  await waitFor(() => expect(host.git.repositories[0]!.stagedChanges).toHaveLength(1));
+  await commit('second', 1);
+  expect(files.getByRole('button', { name: '推送 (2 个提交)' })).toBeDefined();
+  await act(async () => {
+    cleanup();
+  });
+  view = mount();
+  files = within(view.container.querySelector<HTMLElement>('#panel-files')!);
+  await waitFor(() => expect(files.getByRole('button', { name: '推送 (2 个提交)' })).toBeDefined());
+  fireEvent.click(files.getByRole('button', { name: '推送 (2 个提交)' }));
+  await waitFor(() =>
+    expect(files.getByRole('button', { name: '提交已暂存更改 (0)' })).toBeDefined(),
+  );
+  expect((files.getByRole('button', { name: '取消上次提交' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  expect(host.gitActions.filter(({ type }) => type === 'push')).toHaveLength(1);
+});
+
+test('failed pushes retain outgoing counts and drafts while duplicate pushes and index mutations stay locked', async () => {
+  host.git = {
+    available: true,
+    repositories: [
+      {
+        ...gitRepository,
+        stagedChanges: [],
+        sync: { ...gitRepository.sync!, ahead: 2, canUndo: true },
+      },
+    ],
+  };
+  const view = mount();
+  await connected(view);
+  fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
+  const files = within(view.container.querySelector<HTMLElement>('#panel-files')!);
+  const receive = host.receive.bind(host);
+  const requests: Extract<WebviewToExtensionMessage, { type: 'git/push' | 'git/undo-commit' }>[] =
+    [];
+  host.receive = (message) => {
+    if (message.type === 'git/push' || message.type === 'git/undo-commit') requests.push(message);
+    else receive(message);
+  };
+  fireEvent.change(files.getByRole('textbox', { name: '提交消息' }), {
+    target: { value: 'next draft' },
+  });
+  fireEvent.submit(files.getByRole('form', { name: '推送提交' }));
+  expect(requests).toHaveLength(0);
+  await act(async () => {
+    const button = files.getByRole('button', { name: '推送 (2 个提交)' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+  });
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({
+    type: 'git/push',
+    repositoryUri: gitRepository.rootUri,
+    branch: gitRepository.branch,
+    head: gitRepository.sync!.head,
+  });
+  expect((files.getByRole('button', { name: '暂存全部更改' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  expect((files.getByRole('button', { name: '取消上次提交' }) as HTMLButtonElement).disabled).toBe(
+    true,
+  );
+  await act(async () => {
+    host.post({ type: 'host/error', requestId: requests[0]!.requestId, message: '认证失败' });
+  });
+  await waitFor(() => expect(files.getByRole('button', { name: '推送 (2 个提交)' })).toBeDefined());
+  expect(files.queryByText(/^未推送 /)).toBeNull();
+  expect((files.getByRole('textbox', { name: '提交消息' }) as HTMLInputElement).value).toBe(
+    'next draft',
+  );
+  fireEvent.click(files.getByRole('button', { name: '取消上次提交' }));
+  expect(requests).toHaveLength(2);
+  await act(async () => {
+    host.post({ type: 'host/error', requestId: requests[1]!.requestId, message: '提交已变化' });
+  });
+  await waitFor(() => expect(view.getByRole('alert').textContent).toBe('提交已变化'));
+  expect(files.getByRole('button', { name: '推送 (2 个提交)' })).toBeDefined();
 });

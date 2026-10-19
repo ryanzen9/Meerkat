@@ -8,7 +8,7 @@ export interface ReviewState {
   repositoryUri: string;
   activeSessionId: string;
   sessions: ChatSession[];
-  pendingBridgeSessionDeletes: string[];
+  pendingBridgeSessionReleases: string[];
 }
 
 export function createSession(): ChatSession {
@@ -62,7 +62,7 @@ export function restoreReviewState(saved: unknown): ReviewState {
   const data: WebviewState = isRecord(saved) ? saved : {};
   const valid = Array.isArray(data.sessions) ? data.sessions.filter(isSession) : [];
   const allSessions = [...new Map(valid.map((session) => [session.id, session])).values()];
-  const sessions = allSessions.slice(-20).map((session) => {
+  const sessions = allSessions.map((session) => {
     const restored = {
       ...session,
       title: session.title.slice(0, 80),
@@ -85,21 +85,26 @@ export function restoreReviewState(saved: unknown): ReviewState {
     repositoryUri: typeof data.repositoryUri === 'string' ? data.repositoryUri : '',
     activeSessionId,
     sessions,
-    pendingBridgeSessionDeletes: pendingDeletions(
-      Array.isArray(data.pendingBridgeSessionDeletes)
-        ? data.pendingBridgeSessionDeletes
-            .filter(
-              (id: unknown): id is string => typeof id === 'string' && /^[\w-]{1,128}$/.test(id),
-            )
-            .slice(-1000)
-        : [],
-      allSessions.slice(0, -20),
-      sessions,
+    pendingBridgeSessionReleases: pendingReleases(
+      // Older versions queued destructive deletion for the history window.
+      // Migrate that queue to model-only release and preserve stored reviews.
+      [
+        ...(Array.isArray(data.pendingBridgeSessionReleases)
+          ? data.pendingBridgeSessionReleases
+          : []),
+        ...(Array.isArray(data.pendingBridgeSessionDeletes)
+          ? data.pendingBridgeSessionDeletes
+          : []),
+      ]
+        .filter((id: unknown): id is string => typeof id === 'string' && /^[\w-]{1,128}$/.test(id))
+        .slice(-1000),
+      Array.isArray(data.pendingBridgeSessionReleases) ? [] : allSessions.slice(0, -20),
+      sessions.slice(-20),
     ),
   };
 }
 
-function pendingDeletions(
+function pendingReleases(
   previous: string[],
   removed: ChatSession[],
   retained: ChatSession[],
@@ -122,16 +127,16 @@ export function startNewReviewSession(state: ReviewState): ReviewState {
   const candidates = empty
     ? state.sessions.map((session) => (session.id === next.id ? next : session))
     : [...state.sessions, next];
-  const sessions = candidates.slice(-20);
+  const recent = candidates.slice(-20);
   return {
     ...state,
     activeTab: 'chat',
     activeSessionId: next.id,
-    sessions,
-    pendingBridgeSessionDeletes: pendingDeletions(
-      state.pendingBridgeSessionDeletes,
-      candidates.slice(0, -20),
-      sessions,
+    sessions: candidates,
+    pendingBridgeSessionReleases: pendingReleases(
+      state.pendingBridgeSessionReleases,
+      state.sessions.slice(-20).filter((item) => !recent.some(({ id }) => id === item.id)),
+      recent,
     ),
   };
 }
@@ -166,7 +171,7 @@ export function sessionMarkdown(session: ChatSession): string {
       const run = session.reviews?.runs.find(({ id }) => id === reviewRunId);
       const findings =
         session.reviews?.findings.filter((finding) => finding.runId === reviewRunId) ?? [];
-      return `## Review\n\n${findings.map((finding) => `### [${finding.priority}] ${finding.title}\n\n${finding.description}\n\n${finding.references.map((ref) => ref.markdown).join(' · ')}`).join('\n\n')}\n\n${run?.summary ?? '审查未完成。'}`;
+      return `## Review\n\n${findings.map((finding) => `### [${finding.priority}] ${finding.title}\n\n状态：${finding.status === 'resolved' ? '已解决' : '未解决'}\n\n${finding.description}\n\n${finding.references.map((ref) => ref.markdown).join(' · ')}`).join('\n\n')}\n\n${run?.summary ?? '审查未完成。'}`;
     })
     .join('\n\n')}`;
 }

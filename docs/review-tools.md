@@ -44,9 +44,9 @@ Host 在执行工具前检查本轮完整调用列表；`finish_review` 与任�
 
 `data-review-receipt` 为与提交结果相同的 transient 保存回执，前端即时缓存；最终 `data-review-status` 为持久消息部分，由 assistant-ui Data UI 展示。每条意见使用 `display: "standalone"` 的 assistant-ui Tool UI，独立于读取工具的时间线。审查模式不向前端发送模型的普通文本，普通聊天仍保留。
 
-点击已收录意见的代码引用时，Host 从该会话账本查找对应意见，在右侧 Editor 打开代码并展开 VS Code 原生评论线程，显示优先级、标题和 Markdown 描述。批注绑定已验证的行范围，只读且不接受回复；重复点击会复用编辑器分组与同一批注。当前文件与审查内容不同时，批注显示在原始只读快照上，旧位置的批注会被移除。扩展关闭时清理评论控制器及线程。
+点击已收录意见的代码引用时，Host 从该会话账本查找对应意见，在当前活动编辑器分组内以预览方式打开代码并展开 VS Code 原生评论线程，显示优先级、标题和 Markdown 描述。批注绑定已验证的行范围，只读且不接受回复；重复点击复用同一批注，切换编辑器分组后跟随当前分组打开。当前文件与审查内容不同时，批注显示在原始只读快照上，旧位置的批注会被移除。标注栏提供“归档批注”：后端先持久化该意见的 `editorArchived`，再销毁该意见所有引用对应的 CommentThread；不修改解决状态、意见正文、引用快照或收录数量。重复点击、过期线程参数及并发状态修改受到校验。保存失败保留批注并允许重试，较旧响应不会恢复已经归档的批注。刷新及重启后保持归档；卡片显示“批注已归档”，可通过“恢复批注”保存取消归档并重新打开代码。扩展关闭时清理评论控制器及线程。
 
-`GET /v1/sessions/:id/reviews` 返回 Host 的运行记录与已保存意见。刷新、停止或断线后按稳定的运行/意见/工具调用 ID 恢复同一 Tool UI；取消或失败不会删除已收录意见，也不依赖成功提交完整模型历史。Markdown 导出使用同一批回执。账本在当前 Host 会话存活期间有效，webview 的回执缓存随原有 getState/setState 保存；Host 重启后缓存仍可读，运行中的旧记录显示中断，需要新会话继续。代码引用沿用下述快照有效期，过期链接需要重新引用。每个会话最多保存 1,000 个运行和 1,000 条不同意见。
+`GET /v1/sessions/:id/reviews` 返回 Host 的运行记录与已保存意见。账本按对话保存至扩展工作区存储；刷新、停止、断线或 Host 重启后按稳定的运行/意见/工具调用 ID 恢复同一 Tool UI。取消或失败不会删除已收录意见，也不依赖成功提交完整模型历史；运行中的旧记录在重启后显示中断，继续审查需要新建 Agent 会话。意见的解决状态、批注归档状态与引用快照同样保留，点击引用后恢复对应的原生标注和状态按钮。Markdown 导出使用同一批回执。每个会话最多保存 1,000 个运行和 1,000 条不同意见。
 
 ## 审查范围与版本
 
@@ -59,7 +59,7 @@ Host 在执行工具前检查本轮完整调用列表；`finish_review` 与任�
 
 `branch` 必须提供现有 commit/ref 的 `baseRef`，其余范围不接受 `baseRef`。忽略文件不作为未跟踪文件加入快照。冲突状态以 `conflict` 返回；未解决的暂存区条目没有可读的 stage-0 新版本或 staged patch，应使用 `all` / `working-tree` 审查冲突标记。符号链接返回链接本身的文本，子模块返回 commit 变更且不能作为源文件读取。
 
-`list_changes` 固定 Git blob ID，捕获本地改动与未保存内容；未改动的文件也能通过同一 `reviewId` 读取。之后修改文件、暂存或移动 HEAD 不会改变该快照。每个聊天会话保留最近四个快照，有效期 15 分钟；删除会话或关闭 Bridge 会清理快照。未知、跨会话或过期 ID 返回 `review_not_found`。
+`list_changes` 固定 Git blob ID，捕获本地改动与未保存内容；未改动的文件也能通过同一 `reviewId` 读取。之后修改文件、暂存或移动 HEAD 不会改变该快照。供模型读取及提交新意见的快照每个会话保留最近四个，有效期 15 分钟；删除会话或关闭 Bridge 会清理这些内存快照。未知、跨会话或过期 ID 返回 `review_not_found`。已经由 `cite_files` 保存的用户导航引用独立保留，不随这些内存快照过期，也不能替代新意见所需的当前快照校验。
 
 ## 调用示例
 
@@ -129,9 +129,11 @@ Agent instructions 要求模型先用 `read_file` / `get_diff` 核对证据，�
 
 引用通过标准 AI SDK 工具结果进入 UI 与模型历史。正文中的 `review-file:<referenceId>` 由 Markdown 链接组件高亮；用户点击后，通过独立的 `reference/open` 消息传递对应会话的 Host `sessionId` 与 `referenceId`，不会将引用 ID 当作文件 URI。旧的 `review-file:<encoded-file-uri>` 链接仍使用原有文件打开路径。
 
-Host 只在对应会话内解析引用，并重新检查快照、工作区信任与仓库边界。新版本引用的完整快照内容与当前编辑器内容一致时，在现有 editor 中打开原文件；内容已变化、文件已删除、符号链接被替换或引用旧版本时，使用 `meerkat-review` 的只读虚拟文档展示原快照。不会把旧版本行号套用到不同的当前文件上。`readFileReference` 保留完整快照文本（含 CRLF、结尾换行），不受模型工具每页 500 行的限制。
+Host 只在对应会话内解析引用，并重新检查工作区信任与仓库边界。`cite_files` 返回成功前，引用元数据及完整源文本已按对话写入扩展工作区存储的 `file-references-v1` 目录；同一份文本共用内容摘要命名的文件，整个批次通过原子替换清单发布。保存失败返回工具错误，允许重试，不发布半条引用。每个会话最多保存 20,000 条不同引用，重复登记不占用额外数量。聊天引用和审查引用使用相同的保存机制。
 
-编辑器选区从 `startLine - 1` 的第 0 列开始，直到 `endLine - 1` 的行尾，包含所引用的所有行；随后滚动到选区。默认使用 `ViewColumn.Active`，即左侧聊天旁现有的编辑区，点击后将焦点移入 editor。过期、已淘汰或 Host 重启后的引用会明确提示重新生成；已保存的聊天文字和链接不会恢复已结束的 Host 会话。
+新版本引用的完整快照内容与当前编辑器内容一致时，在现有 editor 中打开原文件；内容已变化、文件已删除、符号链接被替换或引用旧版本时，使用 `meerkat-review` 的只读虚拟文档展示原快照。不会把旧版本行号套用到不同的当前文件上。`readFileReference` 保留完整快照文本（含 CRLF、结尾换行），不受模型工具每页 500 行的限制。归档读取独立于模型会话及 Git blob，重启后无需恢复 Provider 会话即可打开。
+
+编辑器选区从 `startLine - 1` 的第 0 列开始，直到 `endLine - 1` 的行尾，包含所引用的所有行；随后滚动到选区。默认使用 `ViewColumn.Active`，即左侧聊天旁现有的编辑区，点击后将焦点移入 editor。取消、失败和 Host 关闭保留已保存引用，删除对话时清理对应清单及源文本。旧版本中已失效且从未保存完整源文本的引用无法补回，损坏或缺失的归档明确报错，不使用当前文件冒充原快照。
 
 `cite_files` 本身只登记引用，用户点击才会打开编辑器；不会修改任何文件。
 
@@ -147,7 +149,7 @@ Host 只在对应会话内解析引用，并重新检查快照、工作区信任
 ## 测试
 
 ```sh
-bun test tests/fileReferences.test.ts tests/reviewTools.test.ts tests/reviewAgent.test.ts tests/provider.test.ts
+bun test tests/fileReferences.test.ts tests/fileReferencePersistence.test.ts tests/reviewTools.test.ts tests/reviewAgent.test.ts tests/provider.test.ts
 bun run check
 bun run build
 ```

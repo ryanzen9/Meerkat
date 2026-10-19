@@ -13,7 +13,7 @@ type RequestInput = Request extends infer T
 interface PendingRequest {
   resolve(message: ExtensionToWebviewMessage): void;
   reject(error: Error): void;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 export function usePanel() {
@@ -59,12 +59,16 @@ export function usePanel() {
     (message: RequestInput) =>
       new Promise<ExtensionToWebviewMessage>((resolve, reject) => {
         const requestId = crypto.randomUUID();
-        const timer = setTimeout(() => {
-          pending.current.delete(requestId);
-          const error = new Error('请求超时，请重试。');
-          dispatch({ type: 'host/error', message: error.message });
-          reject(error);
-        }, 15000);
+        // Git hooks can take minutes. Wait for the host result instead of enabling a retry
+        // while a commit is still running; unmounting rejects all pending requests.
+        const timer = message.type.startsWith('git/')
+          ? undefined
+          : setTimeout(() => {
+              pending.current.delete(requestId);
+              const error = new Error('请求超时，请重试。');
+              dispatch({ type: 'host/error', message: error.message });
+              reject(error);
+            }, 15000);
         pending.current.set(requestId, { resolve, reject, timer });
         vscodeBridge.postMessage({ ...message, requestId });
       }),
@@ -103,6 +107,64 @@ export function usePanel() {
   );
   const copy = useCallback((text: string) => request({ type: 'clipboard/write', text }), [request]);
   const openSettings = useCallback(() => request({ type: 'settings/open' }), [request]);
+  const stageFile = useCallback(
+    async (repositoryUri: string, uri: string) => {
+      await request({ type: 'git/stage', repositoryUri, uri });
+    },
+    [request],
+  );
+  const unstageFile = useCallback(
+    async (repositoryUri: string, uri: string) => {
+      await request({ type: 'git/unstage', repositoryUri, uri });
+    },
+    [request],
+  );
+  const commit = useCallback(
+    async (repositoryUri: string, message: string) => {
+      await request({ type: 'git/commit', repositoryUri, message });
+    },
+    [request],
+  );
+  const stageAll = useCallback(
+    async (repositoryUri: string) => {
+      await request({ type: 'git/stage-all', repositoryUri });
+    },
+    [request],
+  );
+  const unstageAll = useCallback(
+    async (repositoryUri: string) => {
+      await request({ type: 'git/unstage-all', repositoryUri });
+    },
+    [request],
+  );
+  const push = useCallback(
+    async (repositoryUri: string, branch: string, head: string) => {
+      await request({ type: 'git/push', repositoryUri, branch, head });
+    },
+    [request],
+  );
+  const undoCommit = useCallback(
+    async (repositoryUri: string, branch: string, head: string) => {
+      await request({ type: 'git/undo-commit', repositoryUri, branch, head });
+    },
+    [request],
+  );
 
-  return { ...state, refreshing, refresh, openFile, openReference, openCode, copy, openSettings };
+  return {
+    ...state,
+    refreshing,
+    refresh,
+    openFile,
+    openReference,
+    openCode,
+    copy,
+    openSettings,
+    stageFile,
+    unstageFile,
+    commit,
+    stageAll,
+    unstageAll,
+    push,
+    undoCommit,
+  };
 }

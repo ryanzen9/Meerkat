@@ -6,18 +6,31 @@ import type { FileReference } from '../bridge/tools/reviewWorkspace';
 import { BridgeError } from '../bridge/errors';
 import { inside } from '../bridge/tools/reviewGit';
 import { isFileReferenceId } from '../../shared/protocol';
-import type { ReviewFinding } from '../../shared/review';
+import type { FindingStatus, ReviewFinding, ReviewFindingChange } from '../../shared/review';
 
 const SNAPSHOT_SCHEME = 'meerkat-review';
+interface FindingOwner {
+  key: string;
+  sessionId: string;
+  finding: ReviewFinding;
+}
 
 export class ReferenceEditorService implements vscode.Disposable {
   private readonly registration: vscode.Disposable;
   private controller: vscode.CommentController | undefined;
   private readonly threads = new Map<string, vscode.CommentThread>();
-  private editorColumn: vscode.ViewColumn | undefined;
+  private readonly owners = new Map<vscode.CommentThread, FindingOwner>();
+  private readonly pending = new Set<string>();
+  private readonly latestFindings = new Map<string, ReviewFinding>();
+  private readonly actions: vscode.Disposable[];
   private disposed = false;
 
-  constructor(private readonly bridge: Pick<BridgeService, 'readFileReference'>) {
+  constructor(
+    private readonly bridge: Pick<BridgeService, 'readFileReference'> &
+      Partial<
+        Pick<BridgeService, 'setFindingStatus' | 'setFindingArchived' | 'onDidChangeFinding'>
+      >,
+  ) {
     this.registration = vscode.workspace.registerTextDocumentContentProvider(SNAPSHOT_SCHEME, {
       provideTextDocumentContent: async (uri) => {
         const query = new URLSearchParams(uri.query);
@@ -31,6 +44,19 @@ export class ReferenceEditorService implements vscode.Disposable {
         return result.content;
       },
     });
+    this.actions = [
+      vscode.commands.registerCommand('meerkat.resolveReviewFinding', (thread: unknown) =>
+        this.setStatus(thread, 'resolved'),
+      ),
+      vscode.commands.registerCommand('meerkat.reopenReviewFinding', (thread: unknown) =>
+        this.setStatus(thread, 'unresolved'),
+      ),
+      vscode.commands.registerCommand('meerkat.archiveReviewFinding', (thread: unknown) =>
+        this.archive(thread),
+      ),
+    ];
+    const listener = bridge.onDidChangeFinding?.((change) => this.updateFinding(change));
+    if (listener) this.actions.push(listener);
   }
 
   async open(sessionId: string, referenceId: string): Promise<void> {
@@ -61,9 +87,7 @@ export class ReferenceEditorService implements vscode.Disposable {
     }
     this.assertOpen();
     const editor = await vscode.window.showTextDocument(document, {
-      viewColumn: findings.length
-        ? (this.editorColumn ?? vscode.ViewColumn.Beside)
-        : vscode.ViewColumn.Active,
+      viewColumn: vscode.ViewColumn.Active,
       preview: true,
       preserveFocus: false,
       ...(selection ? { selection } : {}),
@@ -72,7 +96,6 @@ export class ReferenceEditorService implements vscode.Disposable {
       editor.revealRange(selection, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     this.assertOpen();
     if (findings.length) {
-      this.editorColumn = editor.viewColumn;
       this.showFindings(sessionId, referenceId, document.uri, selection, findings);
     }
   }
@@ -93,12 +116,16 @@ export class ReferenceEditorService implements vscode.Disposable {
     findings: readonly ReviewFinding[],
   ): void {
     this.controller ??= vscode.comments.createCommentController('meerkat.review', 'Meerkat 审查');
-    for (const finding of findings) {
+    for (const incoming of findings) {
+      this.updateFinding({ sessionId, finding: incoming });
+      const finding = this.latestFindings.get(JSON.stringify([sessionId, incoming.id]))!;
+      if (finding.editorArchived) continue;
       const key = JSON.stringify([sessionId, finding.id, referenceId]);
       let thread = this.threads.get(key);
       // When the live file changes, move the receipt to its exact snapshot.
       if (thread && thread.uri.toString() !== uri.toString()) {
         thread.dispose();
+        this.owners.delete(thread);
         this.threads.delete(key);
         thread = undefined;
       }
@@ -138,10 +165,88 @@ export class ReferenceEditorService implements vscode.Disposable {
           ],
         );
         thread.canReply = false;
-        thread.label = `[${finding.priority}] ${finding.title}`;
         this.threads.set(key, thread);
+        this.owners.set(thread, { key, sessionId, finding });
       }
+      this.updateFinding({ sessionId, finding });
       thread.collapsibleState = vscode.CommentThreadCollapsibleState.Expanded;
+    }
+  }
+
+  private renderStatus(thread: vscode.CommentThread, owner: FindingOwner): void {
+    const { finding, sessionId } = owner;
+    const resolved = finding.status === 'resolved';
+    const saving = this.pending.has(JSON.stringify([sessionId, finding.id]));
+    thread.state = resolved
+      ? vscode.CommentThreadState.Resolved
+      : vscode.CommentThreadState.Unresolved;
+    thread.label = `[${finding.priority}] ${finding.title} · ${saving ? '正在保存…' : resolved ? '已解决' : '未解决'}`;
+    thread.contextValue = !this.bridge.setFindingStatus
+      ? 'meerkat.review.readonly'
+      : saving
+        ? 'meerkat.review.saving'
+        : resolved
+          ? 'meerkat.review.resolved'
+          : 'meerkat.review.unresolved';
+  }
+
+  private updateFinding({ sessionId, finding }: ReviewFindingChange): void {
+    if (this.disposed) return;
+    const key = JSON.stringify([sessionId, finding.id]);
+    const previous = this.latestFindings.get(key);
+    if ((previous?.statusRevision ?? 0) > (finding.statusRevision ?? 0)) return;
+    this.latestFindings.set(key, finding);
+    for (const [thread, owner] of this.owners) {
+      if (owner.sessionId !== sessionId || owner.finding.id !== finding.id) continue;
+      if ((finding.statusRevision ?? 0) >= (owner.finding.statusRevision ?? 0))
+        owner.finding = finding;
+      if (owner.finding.editorArchived) {
+        this.threads.delete(owner.key);
+        this.owners.delete(thread);
+        thread.dispose();
+      } else this.renderStatus(thread, owner);
+    }
+  }
+
+  private async setStatus(value: unknown, status: FindingStatus): Promise<void> {
+    if (this.disposed || !this.bridge.setFindingStatus) return;
+    const owner = this.owners.get(value as vscode.CommentThread);
+    if (!owner || (owner.finding.status ?? 'unresolved') === status) return;
+    await this.saveFinding(
+      owner,
+      () => this.bridge.setFindingStatus!(owner.sessionId, owner.finding.id, status),
+      '审查状态保存失败，请重试。',
+    );
+  }
+
+  private async archive(value: unknown): Promise<void> {
+    if (this.disposed || !this.bridge.setFindingArchived) return;
+    const owner = this.owners.get(value as vscode.CommentThread);
+    if (!owner || owner.finding.editorArchived) return;
+    await this.saveFinding(
+      owner,
+      () => this.bridge.setFindingArchived!(owner.sessionId, owner.finding.id, true),
+      '批注归档失败，请重试。',
+    );
+  }
+
+  private async saveFinding(
+    owner: FindingOwner,
+    save: () => Promise<ReviewFinding>,
+    errorMessage: string,
+  ): Promise<void> {
+    const key = JSON.stringify([owner.sessionId, owner.finding.id]);
+    if (this.pending.has(key)) return;
+    this.pending.add(key);
+    this.updateFinding({ sessionId: owner.sessionId, finding: owner.finding });
+    try {
+      const finding = await save();
+      this.updateFinding({ sessionId: owner.sessionId, finding });
+    } catch {
+      if (!this.disposed) void vscode.window.showErrorMessage(errorMessage);
+    } finally {
+      this.pending.delete(key);
+      this.updateFinding({ sessionId: owner.sessionId, finding: owner.finding });
     }
   }
 
@@ -173,8 +278,12 @@ export class ReferenceEditorService implements vscode.Disposable {
 
   dispose(): void {
     this.disposed = true;
+    for (const action of this.actions) action.dispose();
     for (const thread of this.threads.values()) thread.dispose();
     this.threads.clear();
+    this.owners.clear();
+    this.pending.clear();
+    this.latestFindings.clear();
     this.controller?.dispose();
     this.registration.dispose();
   }

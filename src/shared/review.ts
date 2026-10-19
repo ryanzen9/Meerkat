@@ -24,6 +24,16 @@ export const finishReviewSchema = z
   .strict();
 export type SubmitReviewInput = z.infer<typeof submitReviewSchema>;
 export type FinishReviewInput = z.infer<typeof finishReviewSchema>;
+export const findingStatusSchema = z.enum(['unresolved', 'resolved']);
+export type FindingStatus = z.infer<typeof findingStatusSchema>;
+export const findingUpdateSchema = z
+  .object({
+    status: findingStatusSchema.optional(),
+    editorArchived: z.boolean().optional(),
+  })
+  .strict()
+  .refine((update) => update.status !== undefined || update.editorArchived !== undefined);
+export type FindingUpdate = z.infer<typeof findingUpdateSchema>;
 export interface ReviewFinding {
   id: string;
   runId: string;
@@ -33,10 +43,18 @@ export interface ReviewFinding {
   description: string;
   references: FileReference[];
   savedAt: string;
+  status?: FindingStatus | undefined;
+  editorArchived?: boolean | undefined;
+  // Monotonic revision for all user-controlled metadata, including archiving.
+  statusRevision?: number | undefined;
 }
 export interface SubmitReviewResult {
   accepted: true;
   duplicate: boolean;
+  finding: ReviewFinding;
+}
+export interface ReviewFindingChange {
+  sessionId: string;
   finding: ReviewFinding;
 }
 export type ReviewStatus = 'running' | 'completed' | 'incomplete' | 'cancelled' | 'failed';
@@ -66,6 +84,14 @@ const referenceDetails = z.object({
   label: z.string().max(8192),
   markdown: z.string().max(16384),
 });
+export const fileReferenceSchema: z.ZodType<FileReference> = z.union([
+  referenceDetails.extend({ scope: z.literal('file') }),
+  referenceDetails.extend({
+    scope: z.literal('range'),
+    startLine: z.number().int().min(1),
+    endLine: z.number().int().min(1),
+  }),
+]);
 export const reviewFindingSchema: z.ZodType<ReviewFinding> = z.object({
   id: z.string().regex(/^[a-f0-9]{64}$/),
   runId: z.string().uuid(),
@@ -74,19 +100,10 @@ export const reviewFindingSchema: z.ZodType<ReviewFinding> = z.object({
   priority: submitReviewSchema.shape.priority,
   description: submitReviewSchema.shape.description,
   savedAt: z.string().datetime(),
-  references: z
-    .array(
-      z.union([
-        referenceDetails.extend({ scope: z.literal('file') }),
-        referenceDetails.extend({
-          scope: z.literal('range'),
-          startLine: z.number().int().min(1),
-          endLine: z.number().int().min(1),
-        }),
-      ]),
-    )
-    .min(1)
-    .max(20),
+  status: findingStatusSchema.optional(),
+  editorArchived: z.boolean().optional(),
+  statusRevision: z.number().int().min(0).optional(),
+  references: z.array(fileReferenceSchema).min(1).max(20),
 });
 export const reviewRunStateSchema: z.ZodType<ReviewRunState> = z.object({
   id: z.string().uuid(),

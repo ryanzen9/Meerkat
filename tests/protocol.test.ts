@@ -48,6 +48,77 @@ describe('postMessage boundary validation', () => {
     }
   });
 
+  test('validates stage, unstage and commit requests', () => {
+    const repositoryUri = 'file:///workspace/repo';
+    const uri = 'file:///workspace/repo/src/file.ts';
+    expect(isWebviewMessage({ type: 'git/stage', requestId: 'stage', repositoryUri, uri })).toBe(
+      true,
+    );
+    expect(
+      isWebviewMessage({ type: 'git/unstage', requestId: 'unstage', repositoryUri, uri }),
+    ).toBe(true);
+    expect(
+      isWebviewMessage({ type: 'git/commit', requestId: 'commit', repositoryUri, message: 'fix' }),
+    ).toBe(true);
+    for (const invalid of [
+      { type: 'git/stage', requestId: '1', repositoryUri, uri: '' },
+      { type: 'git/unstage', requestId: '', repositoryUri, uri },
+      { type: 'git/commit', requestId: '1', repositoryUri, message: '  ' },
+      { type: 'git/commit', requestId: '1', repositoryUri, message: 'a'.repeat(5001) },
+    ])
+      expect(isWebviewMessage(invalid)).toBe(false);
+  });
+
+  test('bulk actions and synchronization requests validate repository, branch and pinned commit', () => {
+    const base = { requestId: 'git', repositoryUri: 'file:///repo' };
+    for (const type of ['git/stage-all', 'git/unstage-all']) {
+      expect(isWebviewMessage({ ...base, type })).toBe(true);
+      expect(isWebviewMessage({ ...base, type, repositoryUri: '' })).toBe(false);
+    }
+    for (const type of ['git/push', 'git/undo-commit']) {
+      const message = { ...base, type, branch: 'main', head: 'a'.repeat(40) };
+      expect(isWebviewMessage(message)).toBe(true);
+      for (const invalid of [
+        { ...message, head: 'HEAD' },
+        { ...message, head: '' },
+        { ...message, branch: '' },
+        { ...message, requestId: '' },
+      ])
+        expect(isWebviewMessage(invalid)).toBe(false);
+    }
+    const repository = {
+      rootUri: 'file:///repo',
+      name: 'repo',
+      branch: 'main',
+      remotes: ['origin'],
+      changes: [],
+      stagedChanges: [],
+    };
+    const sync = {
+      head: 'a'.repeat(40),
+      upstream: 'origin/main',
+      ahead: 2,
+      behind: 0,
+      canUndo: true,
+    };
+    const message = (value: unknown) => ({
+      type: 'host/snapshot',
+      snapshot: {
+        ...snapshot,
+        git: { available: true, repositories: [{ ...repository, sync: value }] },
+      },
+    });
+    expect(isExtensionMessage(message(sync))).toBe(true);
+    for (const invalid of [
+      { ...sync, ahead: -1 },
+      { ...sync, ahead: Infinity },
+      { ...sync, head: 'HEAD' },
+      { ...sync, canUndo: 'yes' },
+      { ...sync, behind: 0.1 },
+    ])
+      expect(isExtensionMessage(message(invalid))).toBe(false);
+  });
+
   test('validates nested snapshots and rejects malformed responses', () => {
     expect(isExtensionMessage({ type: 'host/snapshot', snapshot })).toBe(true);
     expect(

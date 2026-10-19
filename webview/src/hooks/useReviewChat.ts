@@ -5,15 +5,27 @@ import { AssistantChatTransport, useAISDKRuntime } from '@assistant-ui/ai-sdk';
 import type { ReviewChatMessage } from '@shared/chat';
 import type { ChatMessage, ReviewTab } from '@shared/models';
 import { vscodeBridge } from '../services/vscode';
+import { isExtensionMessage } from '@shared/protocol';
 import { restoreReviewState, sessionMarkdown, startNewReviewSession } from '../state/reviewState';
 import { bridgeFetch } from '../services/bridgeFetch';
 import { bridgeJson, BridgeResponseError } from '../services/bridgeApi';
 import type { AgentModel, ReasoningEffort } from '@shared/agentModels';
-import type { InteractionMode, ReviewSnapshotState } from '@shared/review';
-import { reviewReceiptSchema, reviewRunStateSchema, reviewSnapshotSchema } from '@shared/review';
+import type {
+  FindingStatus,
+  FindingUpdate,
+  InteractionMode,
+  ReviewSnapshotState,
+} from '@shared/review';
+import {
+  reviewFindingSchema,
+  reviewReceiptSchema,
+  reviewRunStateSchema,
+  reviewSnapshotSchema,
+} from '@shared/review';
 import {
   interruptExpiredReviews,
   mergeReviewReceipt,
+  mergeReviewSnapshots,
   restoreReviewMessages,
 } from '../state/reviewReceipts';
 
@@ -59,6 +71,9 @@ export function useReviewChat(connection: {
 }) {
   const [state, setState] = useState(() => restoreReviewState(vscodeBridge.getState()));
   const session = state.sessions.find(({ id }) => id === state.activeSessionId)!;
+  const currentState = useRef(state);
+  currentState.current = state;
+  const [reviewRefresh, setReviewRefresh] = useState(0);
   const legacySessionIds = useRef(
     new Set(
       state.sessions
@@ -93,7 +108,36 @@ export function useReviewChat(connection: {
   }, [state]);
 
   useEffect(() => {
-    const pending = state.pendingBridgeSessionDeletes;
+    const onMessage = (event: MessageEvent<unknown>) => {
+      if (!isExtensionMessage(event.data)) return;
+      const message = event.data;
+      if (message.type === 'host/review-refresh') {
+        setReviewRefresh((value) => value + 1);
+        return;
+      }
+      if (message.type !== 'host/review-finding-changed') return;
+      setState((current) => ({
+        ...current,
+        sessions: current.sessions.map((item) =>
+          item.bridgeSessionId !== message.sessionId ||
+          !item.reviews?.findings.some((finding) => finding.id === message.finding.id)
+            ? item
+            : {
+                ...item,
+                reviews: mergeReviewSnapshots(item.reviews, {
+                  runs: [],
+                  findings: [message.finding],
+                }),
+              },
+        ),
+      }));
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  useEffect(() => {
+    const pending = state.pendingBridgeSessionReleases;
     if (!pending.length) {
       setCleanupError('');
       return;
@@ -106,7 +150,12 @@ export function useReviewChat(connection: {
       for (const id of pending) {
         if (controller.signal.aborted) return;
         try {
-          await bridgeJson<void>(`/v1/sessions/${id}`, 'DELETE', undefined, controller.signal);
+          await bridgeJson<void>(
+            `/v1/sessions/${id}/release`,
+            'POST',
+            undefined,
+            controller.signal,
+          );
           completed.push(id);
         } catch (error) {
           if (controller.signal.aborted) return;
@@ -115,11 +164,11 @@ export function useReviewChat(connection: {
         }
       }
       if (controller.signal.aborted) return;
-      setCleanupError(failed ? '历史会话清理失败，正在重试。' : '');
+      setCleanupError(failed ? '历史模型会话释放失败，正在重试。' : '');
       if (completed.length)
         setState((current) => ({
           ...current,
-          pendingBridgeSessionDeletes: current.pendingBridgeSessionDeletes.filter(
+          pendingBridgeSessionReleases: current.pendingBridgeSessionReleases.filter(
             (id) => !completed.includes(id),
           ),
         }));
@@ -133,7 +182,7 @@ export function useReviewChat(connection: {
       controller.abort();
       clearTimeout(retry);
     };
-  }, [state.pendingBridgeSessionDeletes]);
+  }, [state.pendingBridgeSessionReleases]);
 
   const transport = useMemo(
     () =>
@@ -266,13 +315,19 @@ export function useReviewChat(connection: {
           ),
         );
         if (controller.signal.aborted) return;
+        const merged = mergeReviewSnapshots(
+          currentState.current.sessions.find((item) => item.id === session.id)?.reviews,
+          reviews,
+        );
         setState((current) => ({
           ...current,
           sessions: current.sessions.map((item) =>
-            item.id === session.id ? { ...item, reviews } : item,
+            item.id === session.id
+              ? { ...item, reviews: mergeReviewSnapshots(item.reviews, reviews) }
+              : item,
           ),
         }));
-        setMessages((messages) => restoreReviewMessages(messages, reviews));
+        setMessages((messages) => restoreReviewMessages(messages, merged));
         if (reviews.runs.some((run) => run.status === 'running'))
           timer = setTimeout(() => {
             void recover();
@@ -281,12 +336,16 @@ export function useReviewChat(connection: {
         if (controller.signal.aborted) return;
         // Local receipts remain readable after the Host session expires.
         if (error instanceof BridgeResponseError && error.status === 404) {
-          const reviews = interruptExpiredReviews(session.reviews);
+          const reviews = interruptExpiredReviews(
+            currentState.current.sessions.find((item) => item.id === session.id)?.reviews,
+          );
           if (reviews) {
             setState((current) => ({
               ...current,
               sessions: current.sessions.map((item) =>
-                item.id === session.id ? { ...item, reviews } : item,
+                item.id === session.id
+                  ? { ...item, reviews: mergeReviewSnapshots(item.reviews, reviews) }
+                  : item,
               ),
             }));
             setMessages((messages) => restoreReviewMessages(messages, reviews));
@@ -302,7 +361,7 @@ export function useReviewChat(connection: {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [session.id, session.bridgeSessionId, chat.status, setMessages]);
+  }, [session.id, session.bridgeSessionId, chat.status, setMessages, reviewRefresh]);
   // The Bridge accepts text turns; do not offer the SDK's default file uploads.
   const runtime = useAISDKRuntime(chat, {
     isSendDisabled: !connection.modelsReady,
@@ -387,6 +446,57 @@ export function useReviewChat(connection: {
       ),
     }));
   }, []);
+  const updateFinding = useCallback(
+    async (findingId: string, update: FindingUpdate) => {
+      const owner = currentState.current.sessions.find((item) => item.id === session.id);
+      const finding = owner?.reviews?.findings.find((item) => item.id === findingId);
+      if (!owner || !finding) throw new Error('审查意见不存在，请刷新对话后重试。');
+      let saved;
+      try {
+        if (!owner.bridgeSessionId) throw new BridgeResponseError('历史会话已结束。', 404);
+        saved = reviewFindingSchema.parse(
+          await bridgeJson<unknown>(
+            `/v1/sessions/${owner.bridgeSessionId}/reviews/${findingId}`,
+            'POST',
+            update,
+          ),
+        );
+        if (
+          saved.id !== findingId ||
+          (update.status !== undefined && saved.status !== update.status) ||
+          (update.editorArchived !== undefined &&
+            (saved.editorArchived ?? false) !== update.editorArchived)
+        )
+          throw new Error('审查状态保存失败，请重试。');
+      } catch (error) {
+        // Older receipts predate the Host archive. Their user-controlled status
+        // stays with the original conversation's local cache after Host expiry.
+        if (!(error instanceof BridgeResponseError) || error.status !== 404) throw error;
+        saved = { ...finding, ...update, statusRevision: (finding.statusRevision ?? 0) + 1 };
+      }
+      const updated = saved;
+      setState((current) => ({
+        ...current,
+        sessions: current.sessions.map((item) =>
+          item.id !== owner.id
+            ? item
+            : {
+                ...item,
+                reviews: mergeReviewSnapshots(item.reviews, { runs: [], findings: [updated] }),
+              },
+        ),
+      }));
+    },
+    [session.id],
+  );
+  const setFindingStatus = useCallback(
+    (findingId: string, status: FindingStatus) => updateFinding(findingId, { status }),
+    [updateFinding],
+  );
+  const setFindingArchived = useCallback(
+    (findingId: string, editorArchived: boolean) => updateFinding(findingId, { editorArchived }),
+    [updateFinding],
+  );
   const setTab = useCallback(
     (activeTab: ReviewTab) => setState((current) => ({ ...current, activeTab })),
     [],
@@ -418,6 +528,8 @@ export function useReviewChat(connection: {
     reasoningEffort,
     mode,
     setMode,
+    setFindingStatus,
+    setFindingArchived,
     setReasoningEffort,
     // A failed turn renders in the message it belongs to (AgentChat's
     // MessageError); the shared banner keeps only panel-side problems.

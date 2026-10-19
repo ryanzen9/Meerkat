@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { relative, sep } from 'node:path';
 import { BridgeError } from '../errors';
+import type { ReferenceDocument, SessionFileReferences } from '../sessions/fileReferenceArchive';
 import {
   captureReview,
   diskFile,
@@ -82,7 +83,10 @@ function pageHunks(patch: string, start: number, end: number) {
 export class ReviewContext implements ReviewToolContext {
   private readonly snapshots = new Map<string, ReviewSnapshot>();
   private readonly fileReferences = new Map<string, Map<string, FileReference>>();
-  constructor(private readonly workspace: ReviewWorkspace) {}
+  constructor(
+    private readonly workspace: ReviewWorkspace,
+    private readonly savedReferences?: SessionFileReferences,
+  ) {}
 
   private async state(signal?: AbortSignal): Promise<ReviewHostState> {
     signal?.throwIfAborted();
@@ -351,13 +355,16 @@ export class ReviewContext implements ReviewToolContext {
     if (!input.references.length || input.references.length > 20)
       reviewError('references_invalid', 'Request 1 to 20 file references.');
     const references: FileReference[] = [];
+    const contents = new Map<string, string>();
     for (const target of input.references) {
       const path = reviewPath(target.path);
+      const contentKey = JSON.stringify([path, target.version]);
       let location: WholeFileReference | (FileReferenceRange & { scope: 'range' });
       if (target.scope === 'file') {
         if ('startLine' in target || 'endLine' in target)
           reviewError('reference_scope_invalid', 'Whole-file references must omit line fields.');
-        await this.fileContent(snapshot, path, target.version, signal);
+        const content = await this.fileContent(snapshot, path, target.version, signal);
+        contents.set(contentKey, content);
         location = { path, version: target.version, scope: 'file' };
       } else {
         if (target.scope !== undefined && target.scope !== 'range')
@@ -386,6 +393,8 @@ export class ReviewContext implements ReviewToolContext {
           endLine: target.endLine,
         };
       }
+      if (this.savedReferences && !contents.has(contentKey))
+        contents.set(contentKey, await this.fileContent(snapshot, path, target.version, signal));
       // Keep legacy range identities stable; whole-file identities are a distinct target.
       const identity =
         location.scope === 'file'
@@ -414,11 +423,29 @@ export class ReviewContext implements ReviewToolContext {
     }
     // Validate the whole batch before publishing anything, including after async reads.
     await this.snapshot(snapshot.id, signal);
-    const registered = this.fileReferences.get(snapshot.id) ?? new Map<string, FileReference>();
-    const newIds = new Set(references.map(({ referenceId }) => referenceId));
-    for (const id of registered.keys()) newIds.delete(id);
-    if (registered.size + newIds.size > MAX_FILE_REFERENCES)
-      reviewError('reference_limit', 'Review exceeds 1,000 file references. Create a new review.');
+    const checkCapacity = () => {
+      const registered = this.fileReferences.get(snapshot.id) ?? new Map<string, FileReference>();
+      const newIds = new Set(references.map(({ referenceId }) => referenceId));
+      for (const id of registered.keys()) newIds.delete(id);
+      if (registered.size + newIds.size > MAX_FILE_REFERENCES)
+        reviewError(
+          'reference_limit',
+          'Review exceeds 1,000 file references. Create a new review.',
+        );
+      return registered;
+    };
+    checkCapacity();
+    if (this.savedReferences) {
+      const documents: ReferenceDocument[] = references.map((reference) => ({
+        reference,
+        content: contents.get(JSON.stringify([reference.path, reference.version]))!,
+      }));
+      // Neither tool results nor submit_review may refer to a citation whose
+      // exact source text has not been durably saved for this conversation.
+      await this.savedReferences.write(documents);
+      await this.snapshot(snapshot.id, signal);
+    }
+    const registered = checkCapacity();
     for (const reference of references) registered.set(reference.referenceId, { ...reference });
     this.fileReferences.set(snapshot.id, registered);
     return { references };
@@ -440,6 +467,16 @@ export class ReviewContext implements ReviewToolContext {
   }
 
   async readFileReference(referenceId: string, signal?: AbortSignal) {
+    await this.state(signal);
+    const saved = await this.savedReferences?.read(referenceId);
+    if (saved) {
+      const state = await this.state(signal);
+      if (!state.repositories.includes(saved.reference.repository))
+        reviewError('repository_unavailable', 'The reference repository is no longer open.');
+      return saved;
+    }
+    // Archived citations are for navigation only. getFileReference continues
+    // enforcing live snapshot validity when the model submits a new finding.
     const reference = await this.getFileReference(referenceId, signal);
     const snapshot = await this.snapshot(reference.reviewId, signal);
     const content = await this.fileContent(snapshot, reference.path, reference.version, signal);

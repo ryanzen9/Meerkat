@@ -123,9 +123,13 @@ HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview
 
 面板采用全高布局：40px 标签与操作栏（Chat / Files / History，右侧为刷新和设置菜单）、可滚动内容和固定的底部输入区（输入框 + 单行 Git 摘要 + 提示行）。ChatGPT 账户与授权操作收纳在设置菜单中。输入支持 Enter 发送、Shift+Enter 换行，以及中文输入法；多行内容在 36–48px 内自适应增长，超出后在输入框内滚动。滚动内容和长代码块不会移动操作栏或输入区，也不会撑宽侧栏。
 
-- **Chat**（默认）：基于 `assistant-ui` 的 `AssistantRuntimeProvider`、AI SDK Runtime、Host Stream 代理和 Thread primitives；消息布局采用官方 `elements-message-pair` 的 Runtime 方案：用户消息为右侧圆角气泡，助手回复为无气泡正文，悬停或键盘聚焦显示回复复制按钮。通过 Extension Host 复制完整回复；支持真实流式文本及工具调用时间线（`elements-tool-timeline`：一段相邻调用汇总为动词、目标与文件增删统计），当前不提供重生成。消息支持安全 Markdown、可横向滚动的代码块、复制和在编辑器打开代码。文件引用采用 `[文件名](review-file:编码后的文件URI)`，点击后由 Host 检查工作区范围再打开。输入框下方以单行显示 Git 分支、Git 状态和新增 / 修改 / 删除数量，超出宽度时截断分支名。
-- **Files**：顶部是工作区上下文面板（摘要行：仓库名 / 多仓库下拉 + Idle / Analyzing… / Issues / Ready 徽章；详情行：分支 + Git 状态 + 变更数量，可点击收起），下面按 Changes / Staged Changes 显示当前仓库未暂存、已暂存的真实 Git 变更，包含未跟踪文件和冲突。两组标题行都可点击收起 / 展开；每个文件占一行（文件名 + 灰色目录 + A / M / R / D / U 标记），新增 / 修改（含重命名）/ 删除使用 Git 主题颜色。仓库、分支、暂存或工作树变化会自动同步；多仓库可在上下文面板切换。顶部数量按文件 URI 去重，避免重复计算部分暂存的文件。
-- **History**：恢复已有会话并回到 Chat；输入区的加号新建会话。草稿、选中标签、仓库和最近 20 个会话（每个最多 100 条消息）通过 VS Code Webview state 保存，输入上限 4000 字符。
+- **Chat**（默认）：基于 `assistant-ui` 的 `AssistantRuntimeProvider`、AI SDK Runtime、Host Stream 代理和 Thread primitives；消息布局采用官方 `elements-message-pair` 的 Runtime 方案：用户消息为右侧圆角气泡，助手回复为无气泡正文，悬停或键盘聚焦显示回复复制按钮。通过 Extension Host 复制完整回复；支持真实流式文本及工具调用时间线（`elements-tool-timeline`：一段相邻调用汇总为动词、目标与文件增删统计），当前不提供重生成。消息支持安全 Markdown、可横向滚动的代码块、复制和在编辑器打开代码。文件引用仅使用 `cite_files` 核实后返回的 `[文件名](review-file:ref_…)`；引用元数据及完整源文本按对话保存在扩展工作区存储中，同一份内容去重。聊天和审查引用在刷新、快照过期及 Host 重启后仍可打开；源文件已变化或删除时显示原始只读代码，审查标注和解决状态从已保存意见恢复。取消或失败保留引用，删除对话时清理；历史版本已失效的引用无法补回缺失快照。打开时仍校验工作区信任和所属仓库。输入框下方以单行显示 Git 分支、Git 状态和新增 / 修改 / 删除数量，超出宽度时截断分支名。
+- **审查意见**：仅由已接受的 `submit_review` 工具结果生成卡片，按对话保存在工作区。刷新、切换对话和 Extension Host 重启后恢复已收录结果；中断的审查不会被当作已完成。每条意见默认“未解决”，可“标记为已解决”或“标记为未解决”；代码标注栏（CommentThread）右上角也提供相同操作，并同步原生线程状态、同一问题的所有引用及聊天卡片。标注栏另提供“归档批注”：保存归档状态后移除同一意见在编辑器中的全部批注，意见、解决状态和引用快照继续保留；刷新或重启后保持归档，卡片提供“恢复批注”入口。归档不改变问题解决状态或收录数量。状态保存成功后更新，失败可重试，较旧的工具结果不会覆盖新状态；重新显示侧栏时补齐状态。状态切换不发送模型消息，也不改变实际收录问题总数。历史缓存意见仍可查看并在原对话保存状态；导出包含每条意见的当前状态。
+- **Files**：顶部单行显示仓库名 / 多仓库下拉、分支、Git 状态及新增 / 修改 / 删除计数。Changes 和 Staged Changes 展示真实 Git 变更（含未跟踪文件与冲突）；文件行提供暂存 / 撤回暂存按钮，也可在两组间拖放，分区标题栏支持批量暂存 / 取消暂存。底部提交区保持两行：独占一行的消息输入框、主操作按钮与取消上次提交入口；未推送数量显示在推送按钮内。暂存、撤回、提交会同步到 VS Code Source Control；文件计数按 URI 去重，部分暂存文件不会重复统计。
+
+  提交消息按仓库保留；操作失败时保留草稿和实际 Git 状态。提交期间会锁定该仓库的暂存切换，等待 Git 与提交钩子返回实际结果；存在未解决的冲突时禁止提交，批量暂存不自动解决冲突。重命名文件的暂存切换同时处理新旧路径，拖放会校验仓库和当前分区。提交只生成本地提交；暂存区为空且存在未推送提交时，主按钮切换为推送。未推送数量由 Git 分支状态读取，没有上游时按本地远程引用统计，刷新后仍可恢复。首次推送可发布分支，多个远程仓库时由 VS Code 提供选择。每次推送前显示 VS Code 原生确认弹窗，列出仓库、本地分支、远程目标和未推送数量；取消或关闭弹窗不推送，确认后重新校验 Git 状态。取消上次提交仅撤回当前分支尚未推送的最后一次提交，把改动放回暂存区并保留已有的暂存、未暂存和未跟踪文件；已推送提交、过期请求及进行中的合并或变基会被拒绝。
+
+- **History**：恢复已有会话并回到 Chat；输入区的加号新建会话。草稿、选中标签、仓库和全部历史会话（每个最多 100 条消息）通过 VS Code Webview state 保存；历史每次展示 20 条，可加载更多，超过最近 20 个会话时仅释放旧模型会话，不删除审查意见、状态或引用快照，输入上限 4000 字符。
 - **设置菜单**：管理 ChatGPT 账户（登录、登出、添加或切换账户），并可打开扩展设置、会话历史或将当前会话作为未保存的 Markdown 文档打开并导出。
 
 **已接入 ChatGPT OAuth 与 Vercel AI SDK ToolLoopAgent。** 点击 Continue with ChatGPT 完成动态注册，选择账户可用模型后发送消息，支持真实流式文本、本地 Function Tool、多轮会话和停止运行。webview 通过 Host 代理消费官方 AI SDK UI Message Stream，不持有 Provider 或本地 HTTP 凭据。PR 服务仍未接入。完整架构、HTTP API、首次授权与真实账户验收见 [Agent Bridge 文档](docs/agent-bridge.md)。Host 重启后须新建 Agent 会话；现有 webview 历史保留文字摘要。可选 `PanelSnapshot.review` 元数据支持 PR 编号和 Idle / Analyzing… / Issues / Ready 徽章，仅对匹配的仓库显示；没有该元数据时使用真实工作区名和 Idle 状态。
@@ -134,10 +138,11 @@ HTML 继续由现有 Provider 生成；浏览器入口固定输出 `dist/webview
 
 - 打开视图后，Webview 注册监听，再发送 `webview/ready`；Host 返回 `host/snapshot`。
 - **刷新工作区**发送 `workspace/refresh`，返回工作区、配置及仓库分支、remote 名称、Changes 和 Staged Changes。
-- `file/open`、`code/open`、`clipboard/write` 和 `settings/open` 只执行相应的固定编辑器操作，以 `host/action` 确认成功；代码以未保存的文档打开，不直接修改工作区文件。原有 `demo/hello` 协议保留兼容。
+- `file/open`、`code/open`、`clipboard/write` 和 `settings/open` 只执行相应的固定编辑器操作，以 `host/action` 确认成功；代码以未保存的文档打开，不直接修改工作区文件。`git/stage`、`git/unstage`、`git/stage-all`、`git/unstage-all`、`git/commit` 和 `git/push` 通过 VS Code Git API 执行；`git/undo-commit` 补充 Git API 未提供的撤回提交操作。写操作返回更新后的快照；推送与撤回必须携带当前分支和提交 ID，后端重新校验。原有 `demo/hello` 协议保留兼容。
 - 工作区目录、信任、扩展配置和 Git 状态变化会主动推送新快照。
+- 并发刷新以最后一次读取为准；较早的读取通过 `host/ack` 确认请求，不覆盖新状态，也不清除较新的错误提示。
 
-并行请求和回复通过独立 `requestId` 对应。请求超时显示可重试错误；过期回复会被忽略。两端都以 `unknown` 接收数据，并通过共享协议校验，Host 只执行白名单中的消息类型。文件打开限制为当前工作区内的 `file` / `vscode-remote` URI；代码、剪贴板与语言标记有长度限制。新增功能时先扩展 `shared/models.ts` 与 `shared/protocol.ts`（联合类型和校验），然后添加 Service、Provider 分支及 UI。
+并行请求和回复通过独立 `requestId` 对应。普通面板请求超时显示可重试错误，过期回复会被忽略；Git 写操作等待 Host 的最终结果，不会因提交钩子运行超过 15 秒而提前报错或允许重复提交。两端都以 `unknown` 接收数据，并通过共享协议校验，Host 只执行白名单中的消息类型。文件打开限制为当前工作区内的 `file` / `vscode-remote` URI；代码、剪贴板与语言标记有长度限制。新增功能时先扩展 `shared/models.ts` 与 `shared/protocol.ts`（联合类型和校验），然后添加 Service、Provider 分支及 UI。
 
 ## 扩展接口
 

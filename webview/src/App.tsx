@@ -26,6 +26,9 @@ export function App() {
             panel.openReference(chat.session.bridgeSessionId, referenceId),
           openCode: panel.openCode,
           copy: panel.copy,
+          findings: chat.session.reviews?.findings ?? [],
+          setFindingStatus: chat.setFindingStatus,
+          setFindingArchived: chat.setFindingArchived,
         }}
       >
         <div
@@ -147,10 +150,17 @@ export function App() {
                 error={!!panel.error}
                 onRepositoryChange={chat.selectRepository}
               />
-              <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
+              <div className="min-h-0 flex-1 overflow-hidden">
                 <FileChanges
                   snapshot={panel.snapshot}
                   repository={repository}
+                  onStage={panel.stageFile}
+                  onUnstage={panel.unstageFile}
+                  onCommit={panel.commit}
+                  onStageAll={panel.stageAll}
+                  onUnstageAll={panel.unstageAll}
+                  onPush={panel.push}
+                  onUndoCommit={panel.undoCommit}
                   onOpen={(uri) => {
                     void panel.openFile(uri).catch(() => {});
                   }}

@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type {
   FinishReviewInput,
+  FindingStatus,
+  FindingUpdate,
   ReviewFinding,
   ReviewRunState,
   ReviewSnapshotState,
@@ -28,6 +30,100 @@ function boundedStateItems(items: string[]): string[] {
 export class ReviewJournal {
   private readonly findings = new Map<string, ReviewFinding>();
   private readonly runs = new Map<string, ReviewRunState>();
+  private writes = Promise.resolve();
+  private changes = Promise.resolve();
+  private deleted = false;
+
+  constructor(
+    private readonly persist?: (state: ReviewSnapshotState) => Promise<void>,
+    saved?: ReviewSnapshotState,
+  ) {
+    for (const run of saved?.runs ?? []) this.runs.set(run.id, structuredClone(run));
+    for (const finding of saved?.findings ?? [])
+      this.findings.set(finding.id, {
+        ...structuredClone(finding),
+        status: finding.status ?? 'unresolved',
+        statusRevision: finding.statusRevision ?? 0,
+      });
+  }
+
+  async save(): Promise<void> {
+    return this.exclusive(() => this.write());
+  }
+
+  private async write(): Promise<void> {
+    const state = this.snapshot();
+    const write = this.writes
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await this.persist?.(state);
+        } catch {
+          throw new BridgeError('review_save_failed', '审查意见保存失败，请重试。', 503);
+        }
+      });
+    this.writes = write;
+    return write;
+  }
+
+  async flush(): Promise<void> {
+    await this.changes;
+    // Failed mutations roll back before releasing the change queue. Reads may
+    // return that unchanged state; a later mutation retries persistence normally.
+    await this.writes.catch(() => {});
+  }
+
+  private exclusive<T>(action: () => Promise<T>): Promise<T> {
+    const change = this.changes
+      .catch(() => {})
+      .then(() => {
+        if (this.deleted) throw new BridgeError('review_not_found', 'Saved review not found.', 404);
+        return action();
+      });
+    this.changes = change.then(
+      () => {},
+      () => {},
+    );
+    return change;
+  }
+
+  async erase(remove: () => Promise<void>): Promise<void> {
+    await this.exclusive(async () => {
+      await remove();
+      this.deleted = true;
+    });
+  }
+
+  setFindingStatus(id: string, status: FindingStatus): Promise<ReviewFinding> {
+    return this.updateFinding(id, { status });
+  }
+
+  async updateFinding(id: string, update: FindingUpdate): Promise<ReviewFinding> {
+    return this.exclusive(async () => {
+      const previous = this.findings.get(id);
+      if (!previous) throw new BridgeError('finding_not_found', '审查意见不存在。', 404);
+      const statusChanged =
+        update.status !== undefined && (previous.status ?? 'unresolved') !== update.status;
+      const archiveChanged =
+        update.editorArchived !== undefined &&
+        (previous.editorArchived ?? false) !== update.editorArchived;
+      if (!statusChanged && !archiveChanged) return structuredClone(previous);
+      const finding = {
+        ...previous,
+        ...(update.status !== undefined ? { status: update.status } : {}),
+        ...(update.editorArchived !== undefined ? { editorArchived: update.editorArchived } : {}),
+        statusRevision: (previous.statusRevision ?? 0) + 1,
+      };
+      this.findings.set(id, finding);
+      try {
+        await this.write();
+      } catch (error) {
+        this.findings.set(id, previous);
+        throw error;
+      }
+      return structuredClone(finding);
+    });
+  }
 
   start(id: string, sessionId: string, text: string, context?: ReviewContext): ReviewRun {
     if (this.runs.size >= 1000)
@@ -45,7 +141,10 @@ export class ReviewJournal {
       startedAt: new Date().toISOString(),
     };
     this.runs.set(id, state);
-    return new ReviewRun(state, this.findings, context);
+    return new ReviewRun(state, this.findings, context, {
+      save: () => this.write(),
+      exclusive: (action) => this.exclusive(action),
+    });
   }
 
   snapshot(): ReviewSnapshotState {
@@ -77,6 +176,10 @@ export class ReviewRun {
     readonly state: ReviewRunState,
     private readonly findings: Map<string, ReviewFinding>,
     private readonly context?: ReviewContext,
+    private readonly persistence?: {
+      save(): Promise<void>;
+      exclusive<T>(action: () => Promise<T>): Promise<T>;
+    },
   ) {}
 
   private assertOpen() {
@@ -172,29 +275,47 @@ export class ReviewRun {
       const id = createHash('sha256')
         .update(JSON.stringify([normalize(input.title), normalize(input.description), locations]))
         .digest('hex');
-      const existing = this.findings.get(id);
-      if (!existing && this.findings.size >= 1000)
-        throw new BridgeError('review_full', 'Start a new session to continue reviewing.', 413);
-      const finding: ReviewFinding = existing ?? {
-        id,
-        runId: this.state.id,
-        toolCallId,
-        title: input.title,
-        priority: input.priority,
-        description: input.description,
-        references,
-        savedAt: new Date().toISOString(),
+      const commit = async () => {
+        signal?.throwIfAborted();
+        this.assertOpen();
+        const existing = this.findings.get(id);
+        if (!existing && this.findings.size >= 1000)
+          throw new BridgeError('review_full', 'Start a new session to continue reviewing.', 413);
+        const finding: ReviewFinding = existing ?? {
+          id,
+          runId: this.state.id,
+          toolCallId,
+          title: input.title,
+          priority: input.priority,
+          description: input.description,
+          references,
+          savedAt: new Date().toISOString(),
+          status: 'unresolved',
+          statusRevision: 0,
+        };
+        // No await between validation and commit: parallel retries see this receipt.
+        this.findings.set(id, finding);
+        this.errors.delete('submit_review');
+        const included = this.state.findingIds.includes(id);
+        if (!included) this.state.findingIds.push(id);
+        this.refreshSummary();
+        try {
+          await this.persistence?.save();
+        } catch (error) {
+          if (!existing) this.findings.delete(id);
+          if (!included) {
+            this.state.findingIds = this.state.findingIds.filter((findingId) => findingId !== id);
+            this.refreshSummary();
+          }
+          throw error;
+        }
+        return {
+          accepted: true as const,
+          duplicate: existing !== undefined,
+          finding: structuredClone(finding),
+        };
       };
-      // No await between validation and commit: parallel retries see this receipt.
-      this.findings.set(id, finding);
-      this.errors.delete('submit_review');
-      if (!this.state.findingIds.includes(id)) this.state.findingIds.push(id);
-      this.refreshSummary();
-      return {
-        accepted: true,
-        duplicate: existing !== undefined,
-        finding: structuredClone(finding),
-      };
+      return await (this.persistence?.exclusive(commit) ?? commit());
     } catch (error) {
       this.errors.set(
         'submit_review',

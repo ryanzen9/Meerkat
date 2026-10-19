@@ -8,6 +8,8 @@ import { streamReviewAgent, type ReviewAgentOptions } from './reviewAgent';
 import type { ReviewContext } from '../tools/reviewContext';
 import { AGENT_IDLE_TIMEOUT_MS, createIdleTimer } from '../../../shared/bridgeTiming';
 import type { InteractionMode } from '../../../shared/review';
+import type { ReviewStorage } from '../sessions/reviewArchive';
+import type { FileReferenceArchive, SessionFileReferences } from '../sessions/fileReferenceArchive';
 
 export type RunStatus = 'running' | 'completed' | 'incomplete' | 'cancelled' | 'failed';
 interface Run {
@@ -21,15 +23,20 @@ interface Run {
   finish(): void;
 }
 export class BridgeRuntime {
-  readonly sessions = new SessionStore();
+  readonly sessions: SessionStore;
   private readonly runs = new Map<string, Run>();
   private closed = false;
   private readonly reviewContexts = new Map<string, ReviewContext>();
+  private readonly releases = new Map<string, Promise<void>>();
   constructor(
     readonly registry: ProviderRegistry,
     private readonly options: ReviewAgentOptions = {},
-    private readonly createReviewContext?: () => ReviewContext,
-  ) {}
+    private readonly createReviewContext?: (references?: SessionFileReferences) => ReviewContext,
+    reviewStorage?: ReviewStorage,
+    private readonly fileReferences?: FileReferenceArchive,
+  ) {
+    this.sessions = new SessionStore(reviewStorage);
+  }
 
   start(
     sessionId: string,
@@ -40,8 +47,13 @@ export class BridgeRuntime {
   ): { runId: string; stream: ReadableStream<UIMessageChunk> } {
     if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
     const session = this.sessions.get(sessionId);
+    if (this.releases.has(sessionId))
+      throw new BridgeError('session_busy', 'The model session is being released.', 409);
     if (!this.reviewContexts.has(sessionId) && this.createReviewContext)
-      this.reviewContexts.set(sessionId, this.createReviewContext());
+      this.reviewContexts.set(
+        sessionId,
+        this.createReviewContext(this.fileReferences?.session(sessionId)),
+      );
     const reviewContext = this.reviewContexts.get(sessionId);
     if ([...this.runs.values()].some((r) => r.sessionId === sessionId && !r.settled))
       throw new BridgeError('session_busy', 'A run is already active in this session.', 409);
@@ -109,7 +121,18 @@ export class BridgeRuntime {
       terminal = true;
       run.settled = true;
       combined.removeEventListener('abort', aborted);
-      run.finish();
+      // Cancellation can close the stream before another pull. Flush its final
+      // state before shutdown/deletion considers the run fully settled.
+      if (!reviewRun) {
+        run.finish();
+        return;
+      }
+      void session.reviews
+        .flush()
+        .catch(() => {})
+        .then(() => session.reviews.save())
+        .catch(() => {})
+        .finally(() => run.finish());
     };
     const aborted = () => {
       if (terminal) return;
@@ -197,6 +220,8 @@ export class BridgeRuntime {
           }
           run.status = 'completed';
           const review = reviewState('completed');
+          if (review) await session.reviews.save();
+          if (terminal) return;
           if (reviewRun?.state.status === 'incomplete') run.status = 'incomplete';
           if (review) output.enqueue(review);
           if (finishChunk) output.enqueue(finishChunk);
@@ -239,13 +264,25 @@ export class BridgeRuntime {
   }
   async readFileReference(sessionId: string, referenceId: string) {
     if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
-    const session = this.sessions.get(sessionId);
-    const context = this.reviewContexts.get(sessionId);
+    let context = this.reviewContexts.get(sessionId);
+    // Opening a saved citation must not depend on (or recreate) a provider/model
+    // session. Ordinary chat citations may also exist without a review journal.
+    if (!context && this.createReviewContext && (await this.fileReferences?.has(sessionId))) {
+      context = this.createReviewContext(this.fileReferences?.session(sessionId));
+      this.reviewContexts.set(sessionId, context);
+    }
     if (!context)
       throw new BridgeError('reference_not_found', 'File reference expired or is unknown.', 404);
     const result = await context.readFileReference(referenceId);
+    let journal;
+    try {
+      journal = this.sessions.reviews.get(sessionId);
+    } catch (error) {
+      if (!(error instanceof BridgeError) || error.code !== 'review_not_found') throw error;
+    }
+    await journal?.flush();
     // The editor receives only committed receipts from the reference's own session.
-    return { ...result, findings: session.reviews.findingsForReference(referenceId) };
+    return { ...result, findings: journal?.findingsForReference(referenceId) ?? [] };
   }
   cancel(id: string): void {
     const run = this.runs.get(id);
@@ -258,20 +295,62 @@ export class BridgeRuntime {
     await Promise.all(active.map((r) => r.ended));
   }
   async deleteSession(id: string): Promise<void> {
-    this.sessions.get(id);
+    let journal;
+    try {
+      journal = this.sessions.reviews.get(id);
+    } catch (error) {
+      if (
+        !(error instanceof BridgeError) ||
+        error.code !== 'review_not_found' ||
+        !(await this.fileReferences?.has(id))
+      )
+        throw error;
+    }
     const active = [...this.runs.values()].find((r) => r.sessionId === id && !r.settled);
     if (active) {
       active.controller.abort();
       await active.ended;
     }
+    await this.fileReferences?.delete(id);
+    if (journal) await this.sessions.reviews.delete(id);
     this.sessions.delete(id);
     this.reviewContexts.get(id)?.dispose();
     this.reviewContexts.delete(id);
   }
+  releaseSession(id: string): Promise<void> {
+    const existing = this.releases.get(id);
+    if (existing) return existing;
+    const session = this.sessions.get(id);
+    const operation = (async () => {
+      const active = [...this.runs.values()].find((run) => run.sessionId === id && !run.settled);
+      if (active) {
+        active.controller.abort();
+        await active.ended;
+      }
+      await session.reviews.flush();
+      if (session.reviews.snapshot().runs.length) await session.reviews.save();
+      // Bound live model histories without deleting accepted findings or the
+      // exact reference documents belonging to the historical conversation.
+      this.sessions.delete(id);
+      this.reviewContexts.get(id)?.dispose();
+      this.reviewContexts.delete(id);
+    })();
+    this.releases.set(id, operation);
+    void operation.finally(() => this.releases.delete(id)).catch(() => {});
+    return operation;
+  }
   async dispose(): Promise<void> {
     this.closed = true;
     await Promise.all(this.registry.list().map((p) => this.cancelProvider(p.id)));
-    for (const session of this.sessions.list()) await this.deleteSession(session.id);
+    await Promise.allSettled(this.releases.values());
+    for (const session of this.sessions.list()) {
+      await session.reviews.flush();
+      if (session.reviews.snapshot().runs.length) await session.reviews.save();
+      this.sessions.delete(session.id);
+    }
+    for (const context of this.reviewContexts.values()) context.dispose();
+    this.reviewContexts.clear();
+    await this.fileReferences?.close();
     await this.registry.dispose();
   }
 }

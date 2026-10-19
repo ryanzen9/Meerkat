@@ -8,6 +8,8 @@ import { validatePlanRequest } from '../src/extension/bridge/providers/openai/co
 import { signedInAuth, responseEvents, sse } from './bridgeFixture';
 import { reviewFixture } from './reviewFixture';
 import type { FileReference } from '../src/extension/bridge/tools/reviewWorkspace';
+import { FileReferenceArchive } from '../src/extension/bridge/sessions/fileReferenceArchive';
+import { join } from 'node:path';
 
 test('all seven registered workspace tools round-trip through the real SDK, provider, runtime and session history', async () => {
   const f = await reviewFixture();
@@ -100,11 +102,18 @@ test('all seven registered workspace tools round-trip through the real SDK, prov
       }),
   );
   const contexts: ReviewContext[] = [];
-  const runtime = new BridgeRuntime(registry, {}, () => {
-    const context = new ReviewContext(f.workspace);
-    contexts.push(context);
-    return context;
-  });
+  const archive = new FileReferenceArchive(join(f.root, '.git', 'saved-references'));
+  const runtime = new BridgeRuntime(
+    registry,
+    {},
+    (references) => {
+      const context = new ReviewContext(f.workspace, references);
+      contexts.push(context);
+      return context;
+    },
+    undefined,
+    archive,
+  );
   try {
     await registry.initialize();
     const provider = registry.list()[0]!;
@@ -135,6 +144,9 @@ test('all seven registered workspace tools round-trip through the real SDK, prov
     expect((await runtime.readFileReference(session.id, citation!.referenceId)).content).toBe(
       'one\ninserted\ntwo\nthree\n',
     );
+    expect((await archive.session(session.id).read(citation!.referenceId))!.content).toBe(
+      'one\ninserted\ntwo\nthree\n',
+    );
     const otherSession = runtime.sessions.create(provider.id, session.provider);
     await expect(
       runtime.readFileReference(otherSession.id, citation!.referenceId),
@@ -153,7 +165,8 @@ test('all seven registered workspace tools round-trip through the real SDK, prov
     await runtime.deleteSession(session.id);
     await expect(
       runtime.readFileReference(session.id, citation!.referenceId),
-    ).rejects.toMatchObject({ code: 'session_not_found' });
+    ).rejects.toMatchObject({ code: 'reference_not_found' });
+    expect(await archive.has(session.id)).toBe(false);
     await expect(contexts[0]!.getFileReference(citation!.referenceId)).rejects.toMatchObject({
       code: 'reference_not_found',
     });

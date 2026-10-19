@@ -11,8 +11,17 @@ import { BridgeHttpServer } from './server/httpServer';
 import { BridgeError } from './errors';
 import { ReviewContext } from './tools/reviewContext';
 import { VSCodeReviewWorkspace } from './tools/vscodeReviewWorkspace';
+import { FileReferenceArchive } from './sessions/fileReferenceArchive';
+import {
+  reviewFindingSchema,
+  type FindingStatus,
+  type FindingUpdate,
+  type ReviewFindingChange,
+} from '../../shared/review';
 
 export class BridgeService implements vscode.Disposable {
+  private readonly findingChanges = new vscode.EventEmitter<ReviewFindingChange>();
+  readonly onDidChangeFinding = this.findingChanges.event;
   private startPromise: Promise<void> | undefined;
   private server: BridgeHttpServer | undefined;
   private runtime: BridgeRuntime | undefined;
@@ -62,7 +71,23 @@ export class BridgeService implements vscode.Disposable {
     });
     registry.register(() => new OpenAIChatGPTProvider(auth));
     this.reviewWorkspace = new VSCodeReviewWorkspace(this.output);
-    this.runtime = new BridgeRuntime(registry, {}, () => new ReviewContext(this.reviewWorkspace!));
+    this.runtime = new BridgeRuntime(
+      registry,
+      {},
+      (references) => new ReviewContext(this.reviewWorkspace!, references),
+      {
+        read: (id) => this.context.workspaceState.get(`reviewJournal.v1.${id}`),
+        write: async (id, state) => {
+          await this.context.workspaceState.update(`reviewJournal.v1.${id}`, state);
+        },
+      },
+      new FileReferenceArchive(
+        join(
+          (this.context.storageUri ?? this.context.globalStorageUri).fsPath,
+          'file-references-v1',
+        ),
+      ),
+    );
     await registry.initialize();
     let baseUrl = '';
     this.api = createBridgeApi({
@@ -73,6 +98,7 @@ export class BridgeService implements vscode.Disposable {
           throw new BridgeError('browser_unavailable', 'Unable to open the system browser.', 503);
       },
       log: (code, status) => this.output.warn(`Bridge ${code} (${status})`),
+      onFindingChanged: (change) => this.findingChanges.fire(change),
     });
     this.server = new BridgeHttpServer({ handle: this.api });
     baseUrl = (await this.server.start()).baseUrl;
@@ -100,6 +126,25 @@ export class BridgeService implements vscode.Disposable {
     await this.ensureStarted();
     return this.runtime!.readFileReference(sessionId, referenceId);
   }
+  setFindingStatus(sessionId: string, findingId: string, status: FindingStatus) {
+    return this.updateFinding(sessionId, findingId, { status });
+  }
+  setFindingArchived(sessionId: string, findingId: string, editorArchived: boolean) {
+    return this.updateFinding(sessionId, findingId, { editorArchived });
+  }
+  private async updateFinding(sessionId: string, findingId: string, update: FindingUpdate) {
+    if (!/^[\w-]{1,128}$/.test(sessionId) || !/^[a-f0-9]{64}$/.test(findingId))
+      throw new BridgeError('request_invalid', 'Invalid review finding.');
+    const response = await this.request(
+      `/v1/sessions/${sessionId}/reviews/${findingId}`,
+      'POST',
+      JSON.stringify(update),
+      new AbortController().signal,
+    );
+    if (!response.ok)
+      throw new BridgeError('review_save_failed', '审查状态保存失败，请重试。', response.status);
+    return reviewFindingSchema.parse(await response.json());
+  }
   // Explicit developer command only: export a short-lived *local Bridge*
   // capability for curl, never OAuth tokens. Removed on extension shutdown.
   async exportConnection(): Promise<string> {
@@ -119,7 +164,7 @@ export class BridgeService implements vscode.Disposable {
       await this.runtime?.dispose();
       this.reviewWorkspace?.dispose();
       if (this.connectionFile) await rm(this.connectionFile, { force: true });
-    })();
+    })().finally(() => this.findingChanges.dispose());
     await this.closing;
   }
   dispose(): void {
