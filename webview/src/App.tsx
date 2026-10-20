@@ -124,8 +124,6 @@ export function App() {
                 reasoningEffort={chat.reasoningEffort}
                 onReasoningEffortChange={chat.setReasoningEffort}
                 model={chat.model}
-                mode={chat.mode}
-                onModeChange={chat.setMode}
                 modelDisabled={
                   !connection.authenticated || !connection.modelsReady || chat.isRunning
                 }

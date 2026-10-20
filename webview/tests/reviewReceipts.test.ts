@@ -133,7 +133,6 @@ test('expired Host keeps cached findings, marks running work incomplete and expo
   expect(interrupted.runs[0]).toMatchObject({ status: 'incomplete', issueCount: 1 });
   const session = {
     ...createSession(),
-    mode: 'review' as const,
     reviews: interrupted,
     messages: [
       {

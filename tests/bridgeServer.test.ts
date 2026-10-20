@@ -2,16 +2,17 @@ import { expect, test } from 'bun:test';
 import { ProviderRegistry } from '../src/extension/bridge/providers/registry';
 import { OpenAIChatGPTProvider } from '../src/extension/bridge/providers/openai/provider';
 import { BridgeRuntime } from '../src/extension/bridge/runtime/bridgeRuntime';
-import { createBridgeApi } from '../src/extension/bridge/server/api';
+import { createBridgeApi, type BridgeApiOptions } from '../src/extension/bridge/server/api';
 import { BridgeHttpServer } from '../src/extension/bridge/server/httpServer';
 import { WebviewBridgeProxy } from '../src/extension/bridge/transport/webviewProxy';
 import { publicError } from '../src/extension/bridge/errors';
 import type { HttpFetch } from '../src/extension/bridge/http';
+import type { ReasoningEffort } from '../src/shared/agentModels';
 import type { ExtensionToWebviewMessage } from '../src/shared/protocol';
 import { isWebviewMessage, isExtensionMessage } from '../src/shared/protocol';
 import { signedInAuth, responseEvents, sse } from './bridgeFixture';
 
-function setup(http?: HttpFetch, timeoutMs?: number) {
+function setup(http?: HttpFetch, timeoutMs?: number, decideMode?: BridgeApiOptions['decideMode']) {
   const registry = new ProviderRegistry();
   const models: HttpFetch = async (url, init) =>
     String(url).endsWith('/models')
@@ -27,6 +28,7 @@ function setup(http?: HttpFetch, timeoutMs?: number) {
     runtime,
     callbackUri: () => 'http://127.0.0.1:1234/auth/callback',
     openBrowser: async () => {},
+    ...(decideMode ? { decideMode } : {}),
   });
   return { registry, runtime, api };
 }
@@ -434,5 +436,70 @@ test('Host proxy cancels a transport that never returns a response', async () =>
     });
   } finally {
     proxy.dispose();
+  }
+});
+
+test('an explicit client mode bypasses automatic routing', async () => {
+  let decisions = 0;
+  const { runtime, api } = setup(undefined, undefined, async () => {
+    decisions++;
+    return 'review';
+  });
+  try {
+    const id = await session(api);
+    const response = await api(
+      request(`/v1/sessions/${id}/messages`, 'POST', { text: 'Hello', mode: 'chat' }),
+    );
+    const output = await response.text();
+    expect(decisions).toBe(0);
+    expect(output).not.toContain('data-review-status');
+    expect(output).toContain('"status":"completed"');
+    expect(output).toContain('Hello');
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+test('automatic routing runs the turn as a review when the model decides review', async () => {
+  const decisions: { text: string; reasoningEffort?: ReasoningEffort }[] = [];
+  const { runtime, api } = setup(undefined, undefined, async ({ text, reasoningEffort }) => {
+    decisions.push({ text, ...(reasoningEffort !== undefined ? { reasoningEffort } : {}) });
+    return 'review';
+  });
+  try {
+    const id = await session(api);
+    const response = await api(
+      request(`/v1/sessions/${id}/messages`, 'POST', { text: '审查当前工作区的改动' }),
+    );
+    const output = await response.text();
+    expect(decisions).toEqual([{ text: '审查当前工作区的改动' }]);
+    // The review wrapper starts before the agent runs and requires finish_review.
+    expect(output).toContain('data-review-status');
+    expect(output).toContain('review_incomplete');
+    const snapshot = (await (await api(request(`/v1/sessions/${id}/reviews`))).json()) as {
+      runs: { text: string; status: string }[];
+    };
+    expect(snapshot.runs).toHaveLength(1);
+    expect(snapshot.runs[0]).toMatchObject({ text: '审查当前工作区的改动', status: 'failed' });
+  } finally {
+    await runtime.dispose();
+  }
+});
+
+test('automatic routing receives the selected reasoning effort unchanged', async () => {
+  const decisions: { reasoningEffort?: ReasoningEffort }[] = [];
+  const { runtime, api } = setup(undefined, undefined, async ({ reasoningEffort }) => {
+    decisions.push(reasoningEffort !== undefined ? { reasoningEffort } : {});
+    return 'chat';
+  });
+  try {
+    const id = await session(api);
+    const response = await api(
+      request(`/v1/sessions/${id}/messages`, 'POST', { text: 'Hello', reasoningEffort: 'high' }),
+    );
+    await response.text();
+    expect(decisions).toEqual([{ reasoningEffort: 'high' }]);
+  } finally {
+    await runtime.dispose();
   }
 });

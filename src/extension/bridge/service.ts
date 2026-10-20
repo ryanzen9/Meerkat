@@ -6,6 +6,7 @@ import { fileMutex } from './auth/storage';
 import { OpenAIChatGPTProvider } from './providers/openai/provider';
 import { ProviderRegistry } from './providers/registry';
 import { BridgeRuntime } from './runtime/bridgeRuntime';
+import { resolveInteractionMode } from './runtime/modeRouter';
 import { createBridgeApi } from './server/api';
 import { BridgeHttpServer } from './server/httpServer';
 import { BridgeError } from './errors';
@@ -99,6 +100,26 @@ export class BridgeService implements vscode.Disposable {
       },
       log: (code, status) => this.output.warn(`Bridge ${code} (${status})`),
       onFindingChanged: (change) => this.findingChanges.fire(change),
+      // The reviewed model and the user's selected reasoning effort also drive
+      // routing, so the automatic mode cannot drift from what the user chose.
+      decideMode: async ({ sessionId, text, reasoningEffort, signal }) => {
+        const runtime = this.runtime!;
+        const session = runtime.sessions.get(sessionId);
+        const decision = await resolveInteractionMode(
+          runtime.registry.get(session.providerId),
+          session,
+          text,
+          reasoningEffort,
+          signal,
+        );
+        const detail = decision.reason
+          ? `: ${decision.reason.replace(/\s+/g, ' ').slice(0, 300)}`
+          : '';
+        this.output.info(
+          `Interaction mode ${decision.mode} (${decision.latencyMs}ms${decision.fallback ? `, fallback ${decision.fallback}` : ''})${detail}`,
+        );
+        return decision.mode;
+      },
     });
     this.server = new BridgeHttpServer({ handle: this.api });
     baseUrl = (await this.server.start()).baseUrl;

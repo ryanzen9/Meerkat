@@ -10,12 +10,7 @@ import { restoreReviewState, sessionMarkdown, startNewReviewSession } from '../s
 import { bridgeFetch } from '../services/bridgeFetch';
 import { bridgeJson, BridgeResponseError } from '../services/bridgeApi';
 import type { AgentModel, ReasoningEffort } from '@shared/agentModels';
-import type {
-  FindingStatus,
-  FindingUpdate,
-  InteractionMode,
-  ReviewSnapshotState,
-} from '@shared/review';
+import type { FindingStatus, FindingUpdate, ReviewSnapshotState } from '@shared/review';
 import {
   reviewFindingSchema,
   reviewReceiptSchema,
@@ -86,7 +81,6 @@ export function useReviewChat(connection: {
   const modelAvailable = connection.models.some((item) => item.id === model);
   const selectedModel = connection.models.find((item) => item.id === model);
   const reasoningEffort = session.reasoningEffort ?? selectedModel?.defaultReasoningEffort;
-  const mode = session.mode ?? 'chat';
   const effortAvailable =
     reasoningEffort === undefined ||
     selectedModel?.supportedReasoningEfforts.some(
@@ -251,7 +245,6 @@ export function useReviewChat(connection: {
           return {
             body: {
               sessionId,
-              mode,
               messages: messages.slice(-1),
               ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
             },
@@ -269,7 +262,6 @@ export function useReviewChat(connection: {
       session.bridgeSessionId,
       bindingError,
       reasoningEffort,
-      mode,
     ],
   );
   const chat = useChat<ReviewChatMessage>({
@@ -438,14 +430,6 @@ export function useReviewChat(connection: {
       ),
     }));
   }, []);
-  const setMode = useCallback((nextMode: InteractionMode) => {
-    setState((current) => ({
-      ...current,
-      sessions: current.sessions.map((item) =>
-        item.id === current.activeSessionId ? { ...item, mode: nextMode } : item,
-      ),
-    }));
-  }, []);
   const updateFinding = useCallback(
     async (findingId: string, update: FindingUpdate) => {
       const owner = currentState.current.sessions.find((item) => item.id === session.id);
@@ -526,8 +510,6 @@ export function useReviewChat(connection: {
     model,
     modelAvailable,
     reasoningEffort,
-    mode,
-    setMode,
     setFindingStatus,
     setFindingArchived,
     setReasoningEffort,

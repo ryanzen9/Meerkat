@@ -8,4 +8,5 @@
 - Add Oxlint, Oxfmt, Tailwind class sorting, and editor/CLI quality checks.
 - Add a collapsible React Webview View to the native Source Control container.
 - Add workspace information, validated message passing, optional Git API access, and persisted state.
+- Remove the manual interaction-mode selector: the Host now lets the selected model and reasoning effort decide per turn whether to run a code review or ordinary chat.
 - Add Bun and Vite builds, development watchers, F5 debugging, and VSIX packaging.

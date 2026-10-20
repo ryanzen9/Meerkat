@@ -113,13 +113,16 @@ flowchart LR
 | `auth`                  | OAuth、凭证存储、刷新和账户隔离                                                                        |
 | `providers`             | `ModelProvider` 接口与注册表；提供 AI SDK `LanguageModel` 和厂商配置，OpenAI 适配使用 `@ai-sdk/openai` |
 | `runtime/reviewAgent`   | 统一 `ToolLoopAgent` 配置、自然结束及可配置的 `stopWhen`、单次工具无响应超时、UI 流和成功历史提交      |
+| `runtime/modeRouter`    | 复用当轮模型与用户选择的推理强度，自动判定本轮为聊天或审查；失败、无工具调用或低置信度降级为聊天       |
 | `runtime/bridgeRuntime` | run 状态、同会话互斥、取消、无响应计时和关闭                                                           |
 | `sessions`              | Host 会话绑定及完整 `ModelMessage[]`，保留工具结果、namespace 和 encrypted reasoning metadata          |
 | `tools`                 | 通过 AI SDK `tool()` 定义厂商无关的本地工具                                                            |
 | `transport`             | IPC Fetch 代理、响应头、ACK 背压与取消传播                                                             |
 | `server`                | 共用 Request/Response API 与受保护的 loopback HTTP 入口                                                |
 
-普通聊天默认使用 `isLoopFinished()`，由 Agent 根据模型的结束状态自然收尾，不限制工具推理轮数。审查模式使用同一循环，逐条通过 `submit_review` 保存问题，经 `finish_review` 校验成功后直接停止，不再发起总结轮；收尾校验失败允许模型修正。系统根据真实状态和已保存意见生成完成提示，模型普通文本不展示为另一份审查报告。`ReviewAgentOptions.stopWhen` 仍支持业务停止条件；审查若被其提前停止且没有成功收尾，会明确失败。工具契约与覆盖范围校验见 [review-tools.md](review-tools.md#增量式审查)。
+用户不再选择交互模式，前端也不发送或保存该状态。每轮开始前，Host 通过 `runtime/modeRouter` 复用当轮模型与用户选择的推理强度调用一次意图路由：模型用单一工具返回 `chat` 或 `review`，`review` 才进入审查流程；路由失败、缺少工具调用、非法输出或低置信度一律按聊天处理，外部取消则透传而不是降级。旧客户端显式传入 `mode` 时直接采用该值并跳过路由。
+
+普通聊天默认使用 `isLoopFinished()`，由 Agent 根据模型的结束状态自然收尾，不限制工具推理轮数。审查轮使用同一循环，逐条通过 `submit_review` 保存问题，经 `finish_review` 校验成功后直接停止，不再发起总结轮；收尾校验失败允许模型修正。系统根据真实状态和已保存意见生成完成提示，模型普通文本不展示为另一份审查报告。`ReviewAgentOptions.stopWhen` 仍支持业务停止条件；审查若被其提前停止且没有成功收尾，会明确失败。工具契约与覆盖范围校验见 [review-tools.md](review-tools.md#增量式审查)。
 
 `ReviewAgentOptions.idleTimeoutMs` 默认 5 分钟，按无响应间隔计时，不限制整次审查时长。模型或工具有输出就重置整轮等待计时；每个并行工具另有独立计时，工具的中间结果会重置它自己的计时，其他工具的输出不会掩盖该工具卡住。超时会取消本轮并保留此前成功的会话历史。Host 代理与 Webview 使用比后端多 15 秒的传输空闲超时，并在收到响应时重置，避免旧的 2/2.5 分钟整轮限制提前中断长任务。
 

@@ -1,6 +1,6 @@
 # 仓库审查工具
 
-Extension Host 为共享 AI SDK Agent 注册下列七个只读工作区工具；审查模式另提供 `submit_review` 和 `finish_review`。OpenAI Provider 会将它们放入 `review` namespace；其他 Provider 共用相同定义和执行逻辑。VS Code 的编辑器、文件查找与诊断由 `VSCodeReviewWorkspace` 适配，Git、快照与文件区域引用由 `ReviewContext` 管理。
+Extension Host 为共享 AI SDK Agent 注册下列七个只读工作区工具；审查轮另提供 `submit_review` 和 `finish_review`。OpenAI Provider 会将它们放入 `review` namespace；其他 Provider 共用相同定义和执行逻辑。VS Code 的编辑器、文件查找与诊断由 `VSCodeReviewWorkspace` 适配，Git、快照与文件区域引用由 `ReviewContext` 管理。
 
 | 工具                 | 输入                                                                          | 结果                                                                                         |
 | -------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
@@ -16,7 +16,7 @@ Extension Host 为共享 AI SDK Agent 注册下列七个只读工作区工具；
 
 ## 增量式审查
 
-在 Thread 输入框的操作栏通过 assistant-ui Selector Element 选择“代码审查”，请求会明确携带 `mode: "review"`；模式选择与 AI 模型选择并列展示，运行期间禁用，草稿及模式随会话保存并支持刷新恢复。普通聊天维持原有文本与工具行为，旧客户端省略 mode 时也按聊天处理。两种模式共用现有 `ToolLoopAgent` 多轮循环；审查工具在 Host 执行，前端仅注册渲染器。
+前端不再提供“交互模式”入口，也不发送或保存模式。每轮用户消息到达 Host 后，`runtime/modeRouter` 先复用当轮模型与用户选择的推理强度做一次意图路由：模型通过唯一的 `select_interaction_mode` 工具返回 `chat` 或 `review`，只有明确要求审查、核实改动或继续未完成审查的请求才进入审查流程，其余按普通聊天处理；路由失败、缺少工具调用或置信度不足时一律降级为普通聊天。请求体中的 `mode` 字段仍然保留，旧客户端显式传入时直接采用且不再路由。两种流程共用现有 `ToolLoopAgent` 多轮循环；审查工具在 Host 执行，前端仅注册渲染器。
 
 每确认一个问题，立即调用：
 
@@ -42,7 +42,7 @@ Extension Host 为共享 AI SDK Agent 注册下列七个只读工作区工具；
 
 Host 在执行工具前检查本轮完整调用列表；`finish_review` 与任何其他工具混用时先返回校验错误，模型需在下一轮单独重试。成功收尾的停止状态不能被后续错误通知撤销。系统生成的未完成事项和限制分别最多保存 2,000 条，超出时保留前 1,999 条，并用最后一条注明省略的数量；取消、失败及未完成状态使用同一上限，保证终态能通过前端校验并刷新恢复。
 
-`data-review-receipt` 为与提交结果相同的 transient 保存回执，前端即时缓存；最终 `data-review-status` 为持久消息部分，由 assistant-ui Data UI 展示。每条意见使用 `display: "standalone"` 的 assistant-ui Tool UI，独立于读取工具的时间线。审查模式不向前端发送模型的普通文本，普通聊天仍保留。
+`data-review-receipt` 为与提交结果相同的 transient 保存回执，前端即时缓存；最终 `data-review-status` 为持久消息部分，由 assistant-ui Data UI 展示。每条意见使用 `display: "standalone"` 的 assistant-ui Tool UI，独立于读取工具的时间线。审查轮不向前端发送模型的普通文本，普通聊天仍保留。
 
 点击已收录意见的代码引用时，Host 从该会话账本查找对应意见，在当前活动编辑器分组内以预览方式打开代码并展开 VS Code 原生评论线程，显示优先级、标题和 Markdown 描述。批注绑定已验证的行范围，只读且不接受回复；重复点击复用同一批注，切换编辑器分组后跟随当前分组打开。当前文件与审查内容不同时，批注显示在原始只读快照上，旧位置的批注会被移除。标注栏提供“归档批注”：后端先持久化该意见的 `editorArchived`，再销毁该意见所有引用对应的 CommentThread；不修改解决状态、意见正文、引用快照或收录数量。重复点击、过期线程参数及并发状态修改受到校验。保存失败保留批注并允许重试，较旧响应不会恢复已经归档的批注。刷新及重启后保持归档；卡片显示“批注已归档”，可通过“恢复批注”保存取消归档并重新打开代码。扩展关闭时清理评论控制器及线程。
 
@@ -149,9 +149,9 @@ Host 只在对应会话内解析引用，并重新检查工作区信任与仓库
 ## 测试
 
 ```sh
-bun test tests/fileReferences.test.ts tests/fileReferencePersistence.test.ts tests/reviewTools.test.ts tests/reviewAgent.test.ts tests/provider.test.ts
+bun test tests/fileReferences.test.ts tests/fileReferencePersistence.test.ts tests/reviewTools.test.ts tests/reviewAgent.test.ts tests/provider.test.ts tests/modeRouter.test.ts
 bun run check
 bun run build
 ```
 
-仓库 fixtures 使用真实 Git，验证各范围、重命名、插入行号、分页与快照稳定性；文本 patch 通过 `git apply --check` 验证。SDK 集成测试通过真实 AI SDK、OpenAI Provider 与 Bridge runtime 执行全部七个工具，并检查引用指令、工具结果历史、最终回答引用、跨轮复用和会话删除清理。`fileReferences.test.ts` 覆盖区域精度、范围校验、版本/路径绑定、Markdown 转义、容量限制、会话隔离、完整快照读取与引用生命周期。VS Code 适配测试检查原生 API 参数、未保存文档过滤、坐标转换及诊断等级映射；引用导航测试验证 IPC、选区、滚动以及旧版/修改/删除/符号链接文件的快照回退。Webview 测试覆盖高亮链接点击、历史会话绑定、旧 URI 链接兼容、无效链接和错误展示。
+仓库 fixtures 使用真实 Git，验证各范围、重命名、插入行号、分页与快照稳定性；文本 patch 通过 `git apply --check` 验证。SDK 集成测试通过真实 AI SDK、OpenAI Provider 与 Bridge runtime 执行全部七个工具，并检查引用指令、工具结果历史、最终回答引用、跨轮复用和会话删除清理。`modeRouter.test.ts` 覆盖审查/聊天判定、低置信度与非法输出降级、路由失败降级、取消透传，以及路由始终使用用户选择的模型与推理强度；`bridgeServer.test.ts` 覆盖显式 mode 绕过路由与自动审查分流。`fileReferences.test.ts` 覆盖区域精度、范围校验、版本/路径绑定、Markdown 转义、容量限制、会话隔离、完整快照读取与引用生命周期。VS Code 适配测试检查原生 API 参数、未保存文档过滤、坐标转换及诊断等级映射；引用导航测试验证 IPC、选区、滚动以及旧版/修改/删除/符号链接文件的快照回退。Webview 测试覆盖高亮链接点击、历史会话绑定、旧 URI 链接兼容、无效链接和错误展示。

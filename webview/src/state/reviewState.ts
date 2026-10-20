@@ -20,7 +20,6 @@ export function createSession(): ChatSession {
     updatedAt: now,
     draft: '',
     messages: [],
-    mode: 'chat',
   };
 }
 
@@ -68,9 +67,11 @@ export function restoreReviewState(saved: unknown): ReviewState {
       title: session.title.slice(0, 80),
       draft: session.draft.slice(0, 4000),
       messages: session.messages.slice(-100),
-    };
+    } as ChatSession & { mode?: unknown };
+    // Older snapshots stored the now-removed interaction mode; drop it so it
+    // never persists again (and never reaches the composer).
+    delete restored.mode;
     if (!isReasoningEffort(restored.reasoningEffort)) delete restored.reasoningEffort;
-    if (restored.mode !== 'chat' && restored.mode !== 'review') restored.mode = 'chat';
     const reviews = reviewSnapshotSchema.safeParse(restored.reviews);
     if (reviews.success) restored.reviews = reviews.data;
     else delete restored.reviews;

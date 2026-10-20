@@ -3,8 +3,12 @@ import { z } from 'zod';
 import { BridgeError, publicError } from '../errors';
 import type { BridgeRuntime } from '../runtime/bridgeRuntime';
 import { sessionInfo } from '../sessions/store';
-import { reasoningEfforts } from '../../../shared/agentModels';
-import { findingUpdateSchema, type ReviewFindingChange } from '../../../shared/review';
+import { reasoningEfforts, type ReasoningEffort } from '../../../shared/agentModels';
+import {
+  findingUpdateSchema,
+  type InteractionMode,
+  type ReviewFindingChange,
+} from '../../../shared/review';
 
 const idSchema = z.string().min(1).max(128);
 const createSchema = z.object({ providerId: idSchema, model: idSchema }).strict();
@@ -55,9 +59,38 @@ export interface BridgeApiOptions {
   openBrowser: (url: string) => Promise<void>;
   log?: (code: string, status: number) => void;
   onFindingChanged?: (change: ReviewFindingChange) => void;
+  /**
+   * Decides whether this turn should run as ordinary chat or as a code review
+   * when the client does not send an explicit mode. Implementations must fall
+   * back to 'chat' on their own failures; aborting the request must reject.
+   */
+  decideMode?: (input: {
+    sessionId: string;
+    text: string;
+    reasoningEffort?: ReasoningEffort;
+    signal: AbortSignal;
+  }) => Promise<InteractionMode>;
 }
 export function createBridgeApi(options: BridgeApiOptions) {
   const { runtime } = options;
+  // An explicit client mode is legacy compatibility and always wins. Otherwise
+  // the model decides per turn; a missing resolver keeps ordinary chat.
+  const modeForTurn = async (
+    sessionId: string,
+    text: string,
+    reasoningEffort: ReasoningEffort | undefined,
+    explicit: InteractionMode | undefined,
+    signal: AbortSignal,
+  ): Promise<InteractionMode> => {
+    if (explicit) return explicit;
+    if (!options.decideMode) return 'chat';
+    return options.decideMode({
+      sessionId,
+      text,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      signal,
+    });
+  };
   let callbackProvider: string | undefined;
   return async (request: Request): Promise<Response> => {
     try {
@@ -144,7 +177,8 @@ export function createBridgeApi(options: BridgeApiOptions) {
         }
         if (sessionMatch[2] === '/messages' && method === 'POST') {
           const { text, reasoningEffort, mode } = await body(request, textSchema);
-          const run = runtime.start(id, text, request.signal, reasoningEffort, mode);
+          const resolvedMode = await modeForTurn(id, text, reasoningEffort, mode, request.signal);
+          const run = runtime.start(id, text, request.signal, reasoningEffort, resolvedMode);
           return createUIMessageStreamResponse({
             stream: run.stream,
             headers: { 'x-bridge-run-id': run.runId },
@@ -172,12 +206,19 @@ export function createBridgeApi(options: BridgeApiOptions) {
         const text = turn.data.text;
         // Existing history and tool calls belong to the provider session. Do not
         // resend the client transcript or execute client-supplied tools/instructions.
+        const resolvedMode = await modeForTurn(
+          data.sessionId,
+          text,
+          data.reasoningEffort,
+          data.mode,
+          request.signal,
+        );
         const run = runtime.start(
           data.sessionId,
           text,
           request.signal,
           data.reasoningEffort,
-          data.mode,
+          resolvedMode,
         );
         return createUIMessageStreamResponse({
           stream: run.stream,

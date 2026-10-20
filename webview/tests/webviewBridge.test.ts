@@ -20,6 +20,7 @@ import type {
 import type { PanelSnapshot } from '../../src/shared/models';
 import { createSession, appendTurn, restoreReviewState } from '../src/state/reviewState';
 import type { AgentModel, ReasoningEffort } from '../../src/shared/agentModels';
+import type { InteractionMode } from '../../src/shared/review';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 
 type TestModelChunk =
@@ -59,6 +60,8 @@ class TestHost {
   modelFailure = false;
   modelGate: Promise<AgentModel[]> | undefined;
   modelRequests = 0;
+  /** Mode the Host's automatic router returns for the next turn. */
+  modeDecision: InteractionMode = 'chat';
   git: PanelSnapshot['git'] = { available: false, repositories: [] };
   gitActions: {
     type: 'stage' | 'unstage' | 'commit' | 'stage-all' | 'unstage-all' | 'push' | 'undo-commit';
@@ -240,6 +243,7 @@ class TestHost {
     });
     const api = createBridgeApi({
       runtime: this.runtime,
+      decideMode: async () => this.modeDecision,
       onFindingChanged: (change) => this.post({ type: 'host/review-finding-changed', ...change }),
       callbackUri: () => 'http://127.0.0.1:1234/auth/callback',
       openBrowser: async () => {},
@@ -738,46 +742,23 @@ async function chooseModel(view: View, name: string) {
   fireEvent.click(view.getByRole('combobox', { name: '选择 AI 模型' }));
   fireEvent.click(await view.findByRole('option', { name }));
 }
-async function chooseMode(view: View, name: '普通聊天' | '代码审查') {
-  fireEvent.click(view.getByRole('combobox', { name: '交互模式' }));
-  fireEvent.click(await view.findByRole('option', { name: new RegExp(name) }));
-}
 
-test('Thread composer uses the selector Element for modes with keyboard navigation and independent model selection', async () => {
+test('Thread composer has no interaction-mode selector while model selection and sending still work', async () => {
   const view = mount();
   await connected(view);
+  expect(view.queryByRole('combobox', { name: '交互模式' })).toBeNull();
   await chooseModel(view, 'Model B');
   await act(async () => host.settle());
-  const trigger = view.getByRole('combobox', { name: '交互模式' });
-  expect(trigger.tagName).toBe('BUTTON');
-  expect(trigger.getAttribute('data-slot')).toBe('model-selector-trigger');
-  expect(trigger.closest('[data-slot="aui_composer-shell"]')).not.toBeNull();
-  expect(trigger.textContent).toContain('普通聊天');
-  fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
-    target: { value: 'Keep this draft while switching modes' },
-  });
-  fireEvent.keyDown(trigger, { key: 'ArrowDown' });
-  const list = await view.findByRole('listbox', { name: '交互模式' });
-  expect(within(list).getAllByRole('option')).toHaveLength(2);
-  const input = list.closest('[cmdk-root]')!.querySelector('input')!;
-  expect(input.getAttribute('aria-label')).toBe('交互模式');
-  fireEvent.keyDown(input, { key: 'End' });
-  await waitFor(() =>
-    expect(list.querySelector('[data-selected="true"]')?.textContent).toContain('代码审查'),
-  );
-  fireEvent.keyDown(input, { key: 'Enter' });
-  await waitFor(() =>
-    expect(view.getByRole('combobox', { name: '交互模式' }).textContent).toContain('代码审查'),
-  );
-  expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
-    'Keep this draft while switching modes',
-  );
-  expect(view.getByRole('combobox', { name: '选择 AI 模型' }).textContent).toContain('Model B');
+  const selector = view.getByRole('combobox', { name: '选择 AI 模型' });
+  expect(selector.tagName).toBe('BUTTON');
+  expect(selector.textContent).toContain('Model B');
   expect(host.runs).toHaveLength(0);
-  await chooseMode(view, '普通聊天');
   await send(view, 'chat with the selected model');
   await answered(view, 1);
+  expect(host.runs).toHaveLength(1);
   expect(host.runs[0]!.model).toBe('model-b');
+  const saved = restoreReviewState(host.savedState).sessions[0]!;
+  expect(saved).not.toHaveProperty('mode');
 });
 
 for (const outcome of ['available', 'empty', 'failure'] as const) {
@@ -1045,7 +1026,7 @@ for (const outcome of ['completed', 'incomplete', 'cancelled', 'failed'] as cons
     };
     const view = mount();
     await connected(view);
-    await chooseMode(view, '代码审查');
+    host.modeDecision = 'review';
     fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
       target: { value: 'Review changes incrementally' },
     });
@@ -1056,11 +1037,6 @@ for (const outcome of ['completed', 'incomplete', 'cancelled', 'failed'] as cons
     );
     fireEvent.click(view.getByRole('button', { name: '发送消息' }));
     await waitFor(() => expect(calls).toBe(6));
-    await waitFor(() =>
-      expect((view.getByRole('combobox', { name: '交互模式' }) as HTMLButtonElement).disabled).toBe(
-        true,
-      ),
-    );
     await waitFor(() =>
       expect(view.getByRole('article', { name: 'P1 Unchecked value' })).toBeDefined(),
     );
@@ -1127,11 +1103,6 @@ for (const outcome of ['completed', 'incomplete', 'cancelled', 'failed'] as cons
     }
     const summary = `审查${{ completed: '已完成', incomplete: '未完成', cancelled: '已取消', failed: '失败' }[outcome]}，已收录 1 条问题。`;
     await waitFor(() => expect(view.getByText(summary)).toBeDefined());
-    await waitFor(() =>
-      expect((view.getByRole('combobox', { name: '交互模式' }) as HTMLButtonElement).disabled).toBe(
-        false,
-      ),
-    );
     expect(view.container.querySelector('[data-review-status]')?.textContent).toBe(summary);
     expect(view.queryByText('审查限制')).toBeNull();
     expect(view.queryByText('Static review only; tests were not run.')).toBeNull();
@@ -1565,7 +1536,7 @@ test('failed timeline steps expose full errors and expandable raw tool input and
   expect(details.getAttribute('aria-expanded')).toBe('false');
 });
 
-test('Thread composer preserves drafts and modes across tabs, sessions and remounts', async () => {
+test('Thread composer preserves drafts across tabs, sessions and remounts', async () => {
   const view = mount();
   await connected(view);
   await send(view, 'draft-session');
@@ -1573,7 +1544,6 @@ test('Thread composer preserves drafts and modes across tabs, sessions and remou
   fireEvent.change(view.getByRole('textbox', { name: '询问 Agent' }), {
     target: { value: '检查这个变更的边界情况' },
   });
-  await chooseMode(view, '代码审查');
   const first = restoreReviewState(host.savedState).activeSessionId;
   fireEvent.click(view.getByRole('tab', { name: 'File Change Status' }));
   expect(view.queryByRole('textbox', { name: '询问 Agent' })).toBeNull();
@@ -1581,21 +1551,17 @@ test('Thread composer preserves drafts and modes across tabs, sessions and remou
   expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
     '检查这个变更的边界情况',
   );
-  expect(view.getByRole('combobox', { name: '交互模式' }).textContent).toContain('代码审查');
   fireEvent.click(view.getByRole('button', { name: '新建会话' }));
   expect((view.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe('');
-  expect(view.getByRole('combobox', { name: '交互模式' }).textContent).toContain('普通聊天');
   fireEvent.click(view.getByRole('tab', { name: 'History' }));
   fireEvent.click(view.getByRole('button', { name: /draft-session/ }));
   expect(restoreReviewState(host.savedState).activeSessionId).toBe(first);
-  expect(view.getByRole('combobox', { name: '交互模式' }).textContent).toContain('代码审查');
   await act(async () => cleanup());
   const restored = mount();
   await connected(restored);
   expect((restored.getByRole('textbox', { name: '询问 Agent' }) as HTMLTextAreaElement).value).toBe(
     '检查这个变更的边界情况',
   );
-  expect(restored.getByRole('combobox', { name: '交互模式' }).textContent).toContain('代码审查');
   expect(host.runs).toHaveLength(1);
 });
 

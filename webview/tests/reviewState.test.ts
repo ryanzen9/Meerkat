@@ -99,3 +99,10 @@ test('reasoning settings restore per session and invalid saved settings preserve
   expect(next.sessions[0]!.reasoningEffort).toBeUndefined();
   expect(empty.sessions[0]!.reasoningEffort).toBe('high');
 });
+
+test('legacy saved interaction modes are dropped so they never persist again', () => {
+  const saved = { ...createSession(), mode: 'review' };
+  const restored = restoreReviewState({ sessions: [saved], activeSessionId: saved.id });
+  expect(restored.sessions[0]).not.toHaveProperty('mode');
+  expect(restored.sessions[0]!.messages).toEqual([]);
+});
