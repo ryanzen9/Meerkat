@@ -28,7 +28,7 @@ Bridge 及其运行依赖在根工程的 `src/extension/` 与 `package.json` 中
 
 授权响应省略 `scope` 时使用本次请求的 scopes；显式返回空值或缩减权限仍会被拒绝。拒绝授权或回调验证失败会结束等待、显示安全的失败原因并允许立即重试，已有 active account 保留。
 
-选择历史会话时，模型选择框显示该会话绑定的模型；账户不匹配或模型不可用时给出提示。只有文字摘要、没有 Host 会话标识的旧历史，以及 Host 重启后失效的历史，需要新建会话。面板保留全部历史，每次展示 20 条，可加载更多；超过最近 20 个会话时，通过 `POST /v1/sessions/:id/release` 释放较早会话的模型历史和内存上下文，保留已保存审查意见、解决状态、批注归档状态与代码快照。释放失败会持久化排队重试；旧版本因历史上限产生的待删除队列迁移为非破坏性的模型会话释放。释放后的历史可查看，继续模型对话需要新建会话。只有显式删除会话才清理审查归档。
+选择历史会话时，模型选择框显示该会话绑定的模型；账户不匹配或模型不可用时给出提示。只有文字摘要、没有 Host 会话标识的旧历史需要新建会话；Host 重启后，有会话标识的历史从工作区会话归档恢复，已发生的工具调用、部分回答和每轮状态会回放到面板。中断的轮次标记为 `interrupted`，半截输出只用于展示、不进入模型上下文；用户可点“继续”，从最后一个已完成步骤接着对话。归档缺失或检查点损坏时该会话只读，并给出可操作提示。面板保留全部历史，每次展示 20 条，可加载更多；超过最近 20 个会话时，通过 `POST /v1/sessions/:id/release` 释放较早会话的内存上下文，保留归档、已保存审查意见、解决状态、批注归档状态与代码快照。释放失败会持久化排队重试；旧版本因历史上限产生的待删除队列迁移为非破坏性的模型会话释放。释放后的历史可查看，继续模型对话时按需从归档恢复。只有显式删除会话才清理审查归档与会话归档。
 
 ## 从 HTTP API 验证真实推理
 
@@ -77,10 +77,11 @@ curl -N -D /tmp/meerkat-stream-headers "$BRIDGE_URL/v1/sessions/$BRIDGE_SESSION/
 | POST         | `/v1/providers/:id/logout`            | 清除本机凭据并返回 `remoteRevocationConfirmed`                                                              |
 | GET          | `/v1/providers/:id/models`            | 实时、账户隔离的 `{id,name,supportedReasoningEfforts,defaultReasoningEffort?}[]`                            |
 | POST         | `/v1/sessions`                        | `{providerId,model}` → `201` 会话元数据                                                                     |
-| GET          | `/v1/sessions`                        | 当前 Host 会话列表                                                                                          |
-| GET / DELETE | `/v1/sessions/:id`                    | 元数据 / 取消关联运行并删除会话                                                                             |
+| GET          | `/v1/sessions`                        | 合并当前 Host 会话与已归档会话，附 `live/archived/updatedAt/title/lastTurnStatus`                           |
+| GET / DELETE | `/v1/sessions/:id`                    | 元数据（归档会话按需恢复）/ 取消关联运行并删除会话及其归档                                                  |
 | POST         | `/v1/sessions/:id/release`            | 释放模型会话与内存上下文，保留审查意见、状态及引用快照                                                      |
 | GET          | `/v1/sessions/:id/reviews`            | 当前会话审查运行记录及已保存意见，用于刷新恢复                                                              |
+| GET          | `/v1/sessions/:id/transcript`         | 回放持久化的消息与工具部件，以及每轮 `status/checkpoints/error`；Webview 重载与 Host 重启后恢复使用         |
 | POST         | `/v1/sessions/:id/reviews/:findingId` | `{status?,editorArchived?}` 更新解决或批注归档状态；至少一项，成功保存后通知界面                            |
 | POST         | `/v1/sessions/:id/messages`           | `{text,reasoningEffort?,mode?:"chat"\|"review"}` → AI SDK UI Message SSE                                    |
 | POST         | `/v1/chat`                            | `{sessionId,messages:UIMessage[],reasoningEffort?,mode?:"chat"\|"review"}` → SSE，仅取最后的 text 用户 turn |
@@ -108,17 +109,19 @@ flowchart LR
   Runtime --> History[SessionHistory / ModelMessage]
 ```
 
-| 模块                    | 职责                                                                                                   |
-| ----------------------- | ------------------------------------------------------------------------------------------------------ |
-| `auth`                  | OAuth、凭证存储、刷新和账户隔离                                                                        |
-| `providers`             | `ModelProvider` 接口与注册表；提供 AI SDK `LanguageModel` 和厂商配置，OpenAI 适配使用 `@ai-sdk/openai` |
-| `runtime/reviewAgent`   | 统一 `ToolLoopAgent` 配置、自然结束及可配置的 `stopWhen`、单次工具无响应超时、UI 流和成功历史提交      |
-| `runtime/modeRouter`    | 复用当轮模型与用户选择的推理强度，自动判定本轮为聊天或审查；失败、无工具调用或低置信度降级为聊天       |
-| `runtime/bridgeRuntime` | run 状态、同会话互斥、取消、无响应计时和关闭                                                           |
-| `sessions`              | Host 会话绑定及完整 `ModelMessage[]`，保留工具结果、namespace 和 encrypted reasoning metadata          |
-| `tools`                 | 通过 AI SDK `tool()` 定义厂商无关的本地工具                                                            |
-| `transport`             | IPC Fetch 代理、响应头、ACK 背压与取消传播                                                             |
-| `server`                | 共用 Request/Response API 与受保护的 loopback HTTP 入口                                                |
+| 模块                      | 职责                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `auth`                    | OAuth、凭证存储、刷新和账户隔离                                                                        |
+| `providers`               | `ModelProvider` 接口与注册表；提供 AI SDK `LanguageModel` 和厂商配置，OpenAI 适配使用 `@ai-sdk/openai` |
+| `runtime/reviewAgent`     | 统一 `ToolLoopAgent` 配置、自然结束及可配置的 `stopWhen`、单次工具无响应超时、UI 流和成功历史提交      |
+| `runtime/modeRouter`      | 复用当轮模型与用户选择的推理强度，自动判定本轮为聊天或审查；失败、无工具调用或低置信度降级为聊天       |
+| `runtime/bridgeRuntime`   | run 状态、同会话互斥、取消、无响应计时、turn 日志/检查点落盘和关闭                                     |
+| `sessions`                | Host 会话绑定及完整 `ModelMessage[]`，保留工具结果、namespace 和 encrypted reasoning metadata          |
+| `sessions/sessionArchive` | 工作区文件归档：会话 metadata、逐步骤历史检查点、turn 状态与 UI 流日志、启动恢复与保留策略             |
+| `sessions/transcript`     | 用 `readUIMessageStream` 回放 UI 流日志，恢复工具卡片、部分回答与每轮状态                              |
+| `tools`                   | 通过 AI SDK `tool()` 定义厂商无关的本地工具                                                            |
+| `transport`               | IPC Fetch 代理、响应头、ACK 背压与取消传播                                                             |
+| `server`                  | 共用 Request/Response API 与受保护的 loopback HTTP 入口                                                |
 
 用户不再选择交互模式，前端也不发送或保存该状态。每轮开始前，Host 通过 `runtime/modeRouter` 复用当轮模型与用户选择的推理强度调用一次意图路由：模型用单一工具返回 `chat` 或 `review`，`review` 才进入审查流程；路由失败、缺少工具调用、非法输出或低置信度一律按聊天处理，外部取消则透传而不是降级。旧客户端显式传入 `mode` 时直接采用该值并跳过路由。
 
@@ -130,7 +133,7 @@ flowchart LR
 
 前端 `useChat<ReviewChatMessage>` 消费同一 AI SDK 协议；工具消息类型通过 `InferUITools` 从后端定义推导，并声明系统审查状态/回执数据类型，`useAISDKRuntime` 将消息、发送和停止状态提供给 assistant-ui。`submitted/streaming` 表示运行中，正常结束及主动停止回到 `ready`，错误进入 `error`。切换会话会停止旧请求，面板销毁取消 IPC 操作，扩展退出关闭 Bridge。审查意见写入独立 Host 账本后即时缓存到 webview；刷新及终态重新读取 `/reviews` 恢复已保存 Tool UI，Host 尚在取消时短暂查询直到终态。正常流式交互仍由 SSE 驱动。
 
-保留已有 `openai-agents` Provider ID 以兼容面板、登录命令、HTTP 客户端和 smoke 脚本；该标识不表示仍使用 OpenAI Agents SDK。OAuth 的存储键和注册信息不变。Host 历史原本就只在当前进程存活，重启后仍须新建会话。
+保留已有 `openai-agents` Provider ID 以兼容面板、登录命令、HTTP 客户端和 smoke 脚本；该标识不表示仍使用 OpenAI Agents SDK。OAuth 的存储键和注册信息不变。Host 执行期的 provider 会话仍在内存，但每轮的用户消息、用户实际看到的 UI 流和每个模型步骤后的完整 `ModelMessage[]` 检查点都会写入会话归档；Host 重启后从归档恢复，被中断的轮次需要用户确认后继续。
 
 ## OAuth 与本地安全
 
@@ -152,7 +155,7 @@ HTTP 仅绑定 `127.0.0.1`，校验 exact Host、随机访问凭据和 Origin �
 - 兼容层检查 SDK **实际序列化的请求**，拒绝官方当前不支持的字段。测试覆盖真实 AI SDK 与 OpenAI Provider 生成的多轮消息、工具循环、namespace、取消、失败/不完整/截断流、推理强度和 UI 转换器。
 - 首版工具仅启用 namespaced 本地 Function Tool。Hosted MCP、tool search、image generation、file search、Code Interpreter、native computer use、平台 Files API 和 audio/video 输入没有启用；请求校验拒绝非 text 用户输入。工具执行不会读写工作区文件，也不运行 shell。
 - API 不接受任意 Agent instructions 或前端工具执行/approval-resume。`/v1/chat` 不重复追加客户端 transcript；新增用户 turn 由 Host session 管理。多个账户的注册可保存，但首版只有一个 active account，不是面向远程多用户的服务。
-- OAuth 登录持久化；Host Agent 会话暂存内存，每会话最多 2 MiB、最多 100 个会话，运行状态保留约 200 条。Host 重启后必须新建 Agent 会话。webview 继续保存最近 20 个会话的文字摘要，每条最多 4000 字符；工具 UI 在当前运行中可见，历史摘要不包含完整工具部件。没有宣称实现断线恢复或持久化 Agent 历史。
+- OAuth 登录持久化。Host 执行期会话在内存：每会话模型历史最多 2 MiB、最多 100 个内存会话，运行状态保留约 200 条。与此同时，会话 metadata、逐步骤 `ModelMessage[]` 检查点和 UI 流日志写入工作区扩展存储的 `sessions-v1/`（默认保留 50 个会话、每会话 200 轮、总量 256 MiB；单轮 UI 日志上限 8 MiB，超出部分标记截断）。Host 重启时把遗留的 `running` 轮次标为 `interrupted`；`GET /v1/sessions/:id/transcript` 回放用户实际看到的文本与工具调用，继续对话时使用最后一个完整步骤的检查点，半截回答不进入模型上下文。归档写入失败只降低可恢复性，不阻断推理；检查点损坏的会话只读。webview 仍保存最近 20 个会话的文字摘要（每条最多 4000 字符）作为回退，工具 UI 的完整形态来自归档。P0 不实现同一 Host 进程内的直播流重连，该场景由 P2 的 run 生命周期解耦与流缓冲处理。
 - 自动化集成测试使用真实 React、assistant-ui、AI SDK Agent、IPC、API 与 SessionStore；远端模型/OAuth 由显式 fixtures 代替。覆盖流式渲染、工具 UI、停止、历史保护、账户/模型绑定和超过 100 次会话清理。
 - 真实 ChatGPT 账户的登录、额度、refresh/revoke 及各 OS 凭据后端仍需账户验收；上面的 smoke 脚本提供真实调用路径，自动化 fixtures 不冒充真实账户推理。
 

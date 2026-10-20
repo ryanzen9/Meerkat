@@ -13,6 +13,7 @@ import { BridgeError } from './errors';
 import { ReviewContext } from './tools/reviewContext';
 import { VSCodeReviewWorkspace } from './tools/vscodeReviewWorkspace';
 import { FileReferenceArchive } from './sessions/fileReferenceArchive';
+import { SESSION_ARCHIVE_DIRECTORY, SessionArchive } from './sessions/sessionArchive';
 import {
   reviewFindingSchema,
   type FindingStatus,
@@ -72,6 +73,13 @@ export class BridgeService implements vscode.Disposable {
     });
     registry.register(() => new OpenAIChatGPTProvider(auth));
     this.reviewWorkspace = new VSCodeReviewWorkspace(this.output);
+    const sessionArchive = new SessionArchive(
+      join(
+        (this.context.storageUri ?? this.context.globalStorageUri).fsPath,
+        SESSION_ARCHIVE_DIRECTORY,
+      ),
+      { log: (message, error) => this.output.warn(message, error) },
+    );
     this.runtime = new BridgeRuntime(
       registry,
       {},
@@ -88,8 +96,17 @@ export class BridgeService implements vscode.Disposable {
           'file-references-v1',
         ),
       ),
+      sessionArchive,
     );
     await registry.initialize();
+    // Recover before the loopback API accepts a turn: turns left running by a
+    // previous Host process must be presented as interrupted, never completed.
+    // Archive failures degrade recovery only; chat itself must keep working.
+    try {
+      await sessionArchive.recover();
+    } catch (error) {
+      this.output.warn('Session archive recovery failed; conversations stay in memory only', error);
+    }
     let baseUrl = '';
     this.api = createBridgeApi({
       runtime: this.runtime,

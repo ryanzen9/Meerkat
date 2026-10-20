@@ -6,6 +6,7 @@ import { ReviewContext } from './components/ReviewContext';
 import { ReviewActions } from './components/ReviewActions';
 import { ReviewTabs } from './components/ReviewTabs';
 import { SessionHistory } from './components/SessionHistory';
+import { SessionRecoveryNotice } from './components/SessionRecoveryNotice';
 import { usePanel } from './hooks/usePanel';
 import { useReviewChat } from './hooks/useReviewChat';
 import { useAgentConnection } from './hooks/useAgentConnection';
@@ -111,6 +112,12 @@ export function App() {
               className="min-h-0 flex-1 overflow-hidden"
               tabIndex={0}
             >
+              <SessionRecoveryNotice
+                recovery={chat.recovery}
+                truncated={chat.transcriptTruncated}
+                disabled={chat.isRunning}
+                onContinue={chat.continueLastTurn}
+              />
               <AgentChat
                 snapshot={panel.snapshot}
                 repository={repository}

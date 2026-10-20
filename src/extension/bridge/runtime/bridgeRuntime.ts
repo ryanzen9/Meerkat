@@ -1,8 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { UIMessageChunk } from 'ai';
+import type { ModelMessage, UIMessageChunk } from 'ai';
 import { BridgeError, publicError } from '../errors';
 import type { ProviderRegistry } from '../providers/registry';
-import { SessionStore } from '../sessions/store';
+import { SessionStore, sessionInfo } from '../sessions/store';
+import { MAX_SESSION_HISTORY_BYTES } from '../sessions/history';
+import type { SessionArchive } from '../sessions/sessionArchive';
+import { buildSessionTranscript } from '../sessions/transcript';
 import type { ReasoningEffort } from '../../../shared/agentModels';
 import { streamReviewAgent, type ReviewAgentOptions } from './reviewAgent';
 import type { ReviewContext } from '../tools/reviewContext';
@@ -10,6 +13,13 @@ import { AGENT_IDLE_TIMEOUT_MS, createIdleTimer } from '../../../shared/bridgeTi
 import type { InteractionMode } from '../../../shared/review';
 import type { ReviewStorage } from '../sessions/reviewArchive';
 import type { FileReferenceArchive, SessionFileReferences } from '../sessions/fileReferenceArchive';
+import {
+  SESSION_ARCHIVE_VERSION,
+  type SessionListItem,
+  type SessionTranscript,
+  type SessionTurnError,
+  type SessionTurnStatus,
+} from '../../../shared/sessionArchive';
 
 export type RunStatus = 'running' | 'completed' | 'incomplete' | 'cancelled' | 'failed';
 interface Run {
@@ -34,8 +44,9 @@ export class BridgeRuntime {
     private readonly createReviewContext?: (references?: SessionFileReferences) => ReviewContext,
     reviewStorage?: ReviewStorage,
     private readonly fileReferences?: FileReferenceArchive,
+    private readonly archive?: SessionArchive,
   ) {
-    this.sessions = new SessionStore(reviewStorage);
+    this.sessions = new SessionStore(reviewStorage, archive);
   }
 
   start(
@@ -47,6 +58,12 @@ export class BridgeRuntime {
   ): { runId: string; stream: ReadableStream<UIMessageChunk> } {
     if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
     const session = this.sessions.get(sessionId);
+    if (session.readOnly)
+      throw new BridgeError(
+        'session_read_only',
+        'This archived conversation can only be viewed. Start a new session.',
+        409,
+      );
     if (this.releases.has(sessionId))
       throw new BridgeError('session_busy', 'The model session is being released.', 409);
     if (!this.reviewContexts.has(sessionId) && this.createReviewContext)
@@ -60,6 +77,13 @@ export class BridgeRuntime {
     const runId = randomUUID();
     const reviewRun =
       mode === 'review' ? session.reviews.start(runId, sessionId, text, reviewContext) : undefined;
+    const journal = this.archive?.journal({
+      sessionId,
+      runId,
+      text,
+      mode,
+      ...(reviewRun ? { reviewRunId: runId } : {}),
+    });
     const controller = new AbortController();
     const combined = AbortSignal.any([signal, controller.signal]);
     const idle = createIdleTimer(
@@ -94,7 +118,16 @@ export class BridgeRuntime {
     }
     this.runs.set(run.id, run);
     const provider = this.registry.get(session.providerId);
-    const agentOptions = { ...this.options, reviewRun };
+    let lastCheckpoint: ModelMessage[] | undefined;
+    const agentOptions: ReviewAgentOptions = {
+      ...this.options,
+      reviewRun,
+      onCheckpoint: (messages, steps) => {
+        lastCheckpoint = messages;
+        journal?.checkpoint(steps);
+        this.persistCheckpoint(sessionId, run.id, messages, steps);
+      },
+    };
     const reviewState = (
       status: 'completed' | 'cancelled' | 'failed',
     ): UIMessageChunk | undefined =>
@@ -116,22 +149,40 @@ export class BridgeRuntime {
     let first = true;
     let finishChunk: UIMessageChunk | undefined;
     let abortOutput: (() => void) | undefined;
-    const cleanup = () => {
+    let turnSettled: Promise<void> | undefined;
+    // Settling is idempotent: a natural finish flushes before the client sees
+    // the terminal state, while cancellation settles during cleanup.
+    const settleTurn = (status: SessionTurnStatus, failure?: BridgeError): Promise<void> =>
+      (turnSettled ??= (async () => {
+        if (status !== 'completed' && lastCheckpoint) {
+          try {
+            session.history.commit(lastCheckpoint);
+          } catch (error) {
+            // The durable checkpoint may exceed the live history budget; keep
+            // it on disk for inspection but do not reject the turn.
+            this.archive?.report('Unable to adopt interrupted checkpoint', error);
+          }
+        }
+        if (reviewRun && reviewRun.state.status === 'running')
+          reviewRun.settle(status === 'cancelled' ? 'cancelled' : 'failed');
+        const turnError: SessionTurnError | undefined = failure
+          ? { code: failure.code, message: failure.message }
+          : undefined;
+        if (journal) await journal.finish(status, turnError).catch(() => undefined);
+      })());
+    const cleanup = (status: SessionTurnStatus, failure?: BridgeError) => {
       idle.dispose();
       terminal = true;
       run.settled = true;
       combined.removeEventListener('abort', aborted);
-      // Cancellation can close the stream before another pull. Flush its final
-      // state before shutdown/deletion considers the run fully settled.
-      if (!reviewRun) {
-        run.finish();
-        return;
-      }
-      void session.reviews
-        .flush()
-        .catch(() => {})
-        .then(() => session.reviews.save())
-        .catch(() => {})
+      void settleTurn(status, failure)
+        .catch(() => undefined)
+        .then(async () => {
+          if (!reviewRun) return;
+          await session.reviews.flush().catch(() => undefined);
+          if (session.reviews.snapshot().runs.length) await session.reviews.save();
+        })
+        .catch(() => undefined)
         .finally(() => run.finish());
     };
     const aborted = () => {
@@ -139,13 +190,17 @@ export class BridgeRuntime {
       terminal = true;
       run.status = 'cancelled';
       abortOutput?.();
+      const failure =
+        combined.reason instanceof BridgeError
+          ? combined.reason
+          : new BridgeError('run_cancelled', 'Run cancelled.', 408);
       void (async () => {
         try {
           await (reader ?? (await opening))?.cancel();
         } catch {
           /* Reader may already be closed. */
         } finally {
-          cleanup();
+          cleanup('cancelled', failure);
         }
       })();
     };
@@ -166,14 +221,21 @@ export class BridgeRuntime {
           output.close();
         };
         combined.addEventListener('abort', aborted, { once: true });
-        if (reviewRun) output.enqueue({ type: 'start', messageId: `review-${run.id}` });
-        if (reviewRun)
-          output.enqueue({
+        if (reviewRun) {
+          const startChunk: UIMessageChunk = { type: 'start', messageId: `review-${run.id}` };
+          output.enqueue(startChunk);
+          journal?.append(startChunk);
+        }
+        if (reviewRun) {
+          const statusChunk: UIMessageChunk = {
             type: 'data-review-status',
             id: run.id,
             data: structuredClone(reviewRun.state),
             transient: true,
-          });
+          };
+          output.enqueue(statusChunk);
+          journal?.append(statusChunk);
+        }
         if (combined.aborted) aborted();
       },
       async pull(output) {
@@ -181,7 +243,9 @@ export class BridgeRuntime {
         try {
           if (first) {
             first = false;
-            output.enqueue(state());
+            const firstState = state();
+            output.enqueue(firstState);
+            journal?.append(firstState);
             return;
           }
           combined.throwIfAborted();
@@ -207,27 +271,34 @@ export class BridgeRuntime {
           if (!next.done) {
             idle.reset();
             output.enqueue(next.value);
+            journal?.append(next.value);
             if (reviewRun && next.value.type === 'tool-output-available') {
               const receipt = next.value.output as { accepted?: boolean; finding?: unknown };
-              if (receipt?.accepted && receipt.finding)
-                output.enqueue({
+              if (receipt?.accepted && receipt.finding) {
+                const receiptChunk: UIMessageChunk = {
                   type: 'data-review-receipt',
                   data: { run: structuredClone(reviewRun.state), result: receipt },
                   transient: true,
-                });
+                };
+                output.enqueue(receiptChunk);
+                journal?.append(receiptChunk);
+              }
             }
             return;
           }
           run.status = 'completed';
           const review = reviewState('completed');
           if (review) await session.reviews.save();
-          if (terminal) return;
           if (reviewRun?.state.status === 'incomplete') run.status = 'incomplete';
+          // Persist the final turn before the client observes readiness so a
+          // reload immediately after completion already finds its transcript.
+          await settleTurn('completed');
+          if (terminal) return;
           if (review) output.enqueue(review);
           if (finishChunk) output.enqueue(finishChunk);
           output.enqueue(state());
           output.close();
-          cleanup();
+          cleanup('completed');
         } catch (error) {
           if (terminal) return;
           const failure = combined.aborted
@@ -242,7 +313,7 @@ export class BridgeRuntime {
           output.enqueue({ type: 'error', errorText: `${failure.code}: ${failure.message}` });
           output.enqueue(state());
           output.close();
-          cleanup();
+          cleanup(run.status === 'cancelled' ? 'cancelled' : 'failed', failure);
         }
       },
       async cancel() {
@@ -261,6 +332,50 @@ export class BridgeRuntime {
     const run = this.runs.get(id);
     if (!run) throw new BridgeError('run_not_found', 'Run not found.', 404);
     return { id: run.id, sessionId: run.sessionId, status: run.status };
+  }
+  /** Merged live and archived session list for the panel/history view. */
+  async listSessions(): Promise<SessionListItem[]> {
+    const items = new Map<string, SessionListItem>();
+    for (const session of this.sessions.list()) {
+      const info = sessionInfo(session);
+      items.set(session.id, {
+        ...info,
+        updatedAt: session.createdAt,
+        live: true,
+        archived: false,
+      });
+    }
+    for (const meta of await this.sessions.listArchived()) {
+      const existing = items.get(meta.id);
+      items.set(meta.id, {
+        id: meta.id,
+        providerId: meta.providerId,
+        model: meta.model,
+        accountId: meta.accountId,
+        createdAt: meta.createdAt,
+        updatedAt: meta.updatedAt,
+        title: meta.title,
+        live: existing?.live ?? false,
+        archived: existing === undefined,
+        ...(meta.lastTurnStatus ? { lastTurnStatus: meta.lastTurnStatus } : {}),
+      });
+    }
+    return [...items.values()];
+  }
+  /** Rehydrates a durable conversation after a Host restart. */
+  async ensureSession(id: string) {
+    if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
+    return this.sessions.ensure(id);
+  }
+  /** Replayed UI messages plus turn statuses persisted by the session archive. */
+  async transcript(sessionId: string): Promise<SessionTranscript> {
+    if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
+    const archive = this.sessions.archive;
+    if (!archive) throw new BridgeError('session_not_found', 'Session not found.', 404);
+    await archive.flushSession(sessionId);
+    const transcript = await buildSessionTranscript(archive, sessionId);
+    if (!transcript) throw new BridgeError('session_not_found', 'Session not found.', 404);
+    return transcript;
   }
   async readFileReference(sessionId: string, referenceId: string) {
     if (this.closed) throw new BridgeError('bridge_closed', 'Bridge is shutting down.', 503);
@@ -302,7 +417,7 @@ export class BridgeRuntime {
       if (
         !(error instanceof BridgeError) ||
         error.code !== 'review_not_found' ||
-        !(await this.fileReferences?.has(id))
+        (!(await this.fileReferences?.has(id)) && !(await this.sessions.archive?.readMeta(id)))
       )
         throw error;
     }
@@ -316,6 +431,7 @@ export class BridgeRuntime {
     this.sessions.delete(id);
     this.reviewContexts.get(id)?.dispose();
     this.reviewContexts.delete(id);
+    await this.archive?.deleteSession(id);
   }
   releaseSession(id: string): Promise<void> {
     const existing = this.releases.get(id);
@@ -350,7 +466,36 @@ export class BridgeRuntime {
     }
     for (const context of this.reviewContexts.values()) context.dispose();
     this.reviewContexts.clear();
+    await this.archive?.close();
     await this.fileReferences?.close();
     await this.registry.dispose();
+  }
+  /**
+   * Durable step-boundary checkpoint write. Failures degrade recovery, never
+   * the running answer; the live SessionHistory cap is applied before writing.
+   */
+  private persistCheckpoint(
+    sessionId: string,
+    runId: string,
+    messages: ModelMessage[],
+    steps: number,
+  ): void {
+    const archive = this.archive;
+    if (!archive) return;
+    try {
+      if (Buffer.byteLength(JSON.stringify(messages)) > MAX_SESSION_HISTORY_BYTES) return;
+    } catch {
+      return;
+    }
+    void archive
+      .writeHistory({
+        version: SESSION_ARCHIVE_VERSION,
+        sessionId,
+        messages,
+        checkpoint: { runId, steps, at: new Date().toISOString() },
+      })
+      .catch((error: unknown) =>
+        archive.report(`Unable to persist history checkpoint for ${sessionId}`, error),
+      );
   }
 }
