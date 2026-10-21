@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  reasoningEfforts,
+  type ReasoningEffort,
+  type SupportedReasoningEffort,
+} from './agentModels';
 
 // Durable conversation metadata. JSON-only: this module is shared by the Host
 // (file archive) and the Webview (transcript hydration), so it must not import
@@ -22,6 +27,12 @@ const runIdSchema = z.string().regex(/^[\w-]{1,128}$/);
 const turnErrorSchema = z
   .object({ code: z.string().min(1).max(128), message: z.string().max(2000) })
   .strict();
+const supportedReasoningEffortSchema = z
+  .object({
+    reasoningEffort: z.enum(reasoningEfforts),
+    description: z.string().max(500),
+  })
+  .strict();
 
 export interface SessionMeta {
   version: typeof SESSION_ARCHIVE_VERSION;
@@ -33,6 +44,10 @@ export interface SessionMeta {
   createdAt: string;
   updatedAt: string;
   lastTurnStatus?: SessionTurnStatus | undefined;
+  /** Model capabilities are part of the session binding; provider/model
+   * aliases can disappear from a catalog while a saved conversation remains. */
+  supportedReasoningEfforts?: SupportedReasoningEffort[] | undefined;
+  defaultReasoningEffort?: ReasoningEffort | undefined;
 }
 
 export const sessionMetaSchema: z.ZodType<SessionMeta> = z
@@ -46,6 +61,8 @@ export const sessionMetaSchema: z.ZodType<SessionMeta> = z
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
     lastTurnStatus: z.enum(sessionTurnStatuses).optional(),
+    supportedReasoningEfforts: z.array(supportedReasoningEffortSchema).max(20).optional(),
+    defaultReasoningEffort: z.enum(reasoningEfforts).optional(),
   })
   .strict();
 

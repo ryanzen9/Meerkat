@@ -91,9 +91,13 @@ export class OpenAIChatGPTProvider implements ModelProvider {
     const account = await this.auth.credential(session.accountId);
     signal.throwIfAborted();
     const effort = reasoningEffort ?? session.defaultReasoningEffort;
+    // Archived conversations written before capabilities were persisted have an
+    // unknown capability set. Accept the requested effort instead of failing a
+    // resumed turn; sessions created with a catalog keep strict validation.
     if (
       effort !== undefined &&
-      !session.supportedReasoningEfforts?.some((option) => option.reasoningEffort === effort)
+      session.supportedReasoningEfforts !== undefined &&
+      !session.supportedReasoningEfforts.some((option) => option.reasoningEffort === effort)
     )
       throw new BridgeError(
         'reasoning_effort_unavailable',
@@ -114,7 +118,12 @@ export class OpenAIChatGPTProvider implements ModelProvider {
           systemMessageMode: 'developer',
           include: ['reasoning.encrypted_content'],
           // Account catalogs may expose model aliases unknown to this SDK.
-          ...(session.supportedReasoningEfforts?.length ? { forceReasoning: true } : {}),
+          // Legacy archives without capability metadata but with an explicit
+          // effort are reasoning sessions too, so force the reasoning layout.
+          ...(session.supportedReasoningEfforts?.length ||
+          (session.supportedReasoningEfforts === undefined && effort !== undefined)
+            ? { forceReasoning: true }
+            : {}),
           ...(effort !== undefined ? { reasoningEffort: effort } : {}),
         } satisfies OpenAILanguageModelResponsesOptions,
       },

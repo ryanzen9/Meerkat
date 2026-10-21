@@ -11,6 +11,7 @@ import {
   SESSION_ARCHIVE_DIRECTORY,
   SessionArchive,
 } from '../src/extension/bridge/sessions/sessionArchive';
+import { SessionStore } from '../src/extension/bridge/sessions/store';
 import { sessionTranscriptSchema } from '../src/shared/sessionArchive';
 import { responseEvents, signedInAuth, sse } from './bridgeFixture';
 
@@ -31,7 +32,19 @@ interface Host {
   requests: string[];
 }
 
-async function hostFixture(script: Script, root?: string): Promise<Host> {
+interface HostOptions {
+  catalog?: unknown;
+}
+
+const defaultCatalog = {
+  models: [{ slug: 'fixture-model', display_name: 'Fixture', visibility: 'list' }],
+};
+
+async function hostFixture(
+  script: Script,
+  root?: string,
+  options: HostOptions = {},
+): Promise<Host> {
   const directory = root ?? (await mkdtemp(join(tmpdir(), 'meerkat-session-host-')));
   if (!root) roots.push(directory);
   const archive = new SessionArchive(join(directory, SESSION_ARCHIVE_DIRECTORY));
@@ -43,9 +56,7 @@ async function hostFixture(script: Script, root?: string): Promise<Host> {
     () =>
       new OpenAIChatGPTProvider(signedInAuth(), async (url, init) => {
         if (String(url).endsWith('/models'))
-          return Response.json({
-            models: [{ slug: 'fixture-model', display_name: 'Fixture', visibility: 'list' }],
-          });
+          return Response.json(options.catalog ?? defaultCatalog);
         const body = String(init?.body ?? '');
         requests.push(body);
         return script(calls++, body);
@@ -95,6 +106,90 @@ const toolCall = () =>
 
 const firstTurnScript: Script = (call) =>
   call === 0 ? toolCall() : sse(responseEvents(call === 1 ? 'Answer one' : 'Answer two'));
+const reasoningTurnScript: Script = (call) =>
+  sse(responseEvents(call === 0 ? 'Answer one' : 'Answer two'));
+
+test('archived sessions keep model reasoning capabilities across a restart', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'meerkat-session-caps-'));
+  roots.push(directory);
+  const archiveDirectory = join(directory, SESSION_ARCHIVE_DIRECTORY);
+  const archive = new SessionArchive(archiveDirectory);
+  await archive.initialize();
+  const store = new SessionStore(undefined, archive);
+  const session = store.create('openai-agents', {
+    model: 'fixture-model',
+    accountId: 'account-a',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low', description: 'Fast' },
+      { reasoningEffort: 'high', description: 'Thorough' },
+    ],
+    defaultReasoningEffort: 'low',
+  });
+  await archive.flush();
+
+  const restarted = new SessionStore(undefined, new SessionArchive(archiveDirectory));
+  const restored = await restarted.ensure(session.id);
+  expect(restored.provider).toEqual({
+    model: 'fixture-model',
+    accountId: 'account-a',
+    supportedReasoningEfforts: [
+      { reasoningEffort: 'low', description: 'Fast' },
+      { reasoningEffort: 'high', description: 'Thorough' },
+    ],
+    defaultReasoningEffort: 'low',
+  });
+});
+
+test('a restarted conversation accepts its reasoning effort for the next turn', async () => {
+  const catalog = {
+    models: [
+      {
+        slug: 'fixture-model',
+        display_name: 'Fixture',
+        visibility: 'list',
+        supported_reasoning_levels: [
+          { effort: 'low', description: 'Fast' },
+          { effort: 'high', description: 'Thorough' },
+        ],
+        default_reasoning_level: 'low',
+      },
+    ],
+  };
+  const first = await hostFixture(reasoningTurnScript, undefined, { catalog });
+  const hosts: Host[] = [first];
+  try {
+    const session = await newSession(first);
+    const run = first.runtime.start(
+      session.id,
+      'Reasoned question',
+      new AbortController().signal,
+      'high',
+    );
+    await consume(run);
+    expect(JSON.parse(first.requests.at(-1)!).reasoning).toMatchObject({ effort: 'high' });
+
+    const second = await hostFixture(reasoningTurnScript, first.root, { catalog });
+    hosts.push(second);
+    await second.archive.recover();
+    const restored = await second.runtime.ensureSession(session.id);
+    expect(restored.provider).toMatchObject({
+      supportedReasoningEfforts: [
+        { reasoningEffort: 'low', description: 'Fast' },
+        { reasoningEffort: 'high', description: 'Thorough' },
+      ],
+      defaultReasoningEffort: 'low',
+    });
+    const follow = second.runtime.start(session.id, '继续', new AbortController().signal, 'high');
+    const followOutput = await consume(follow);
+    expect(followOutput).toContain('Answer one');
+    const followBody = second.requests.at(-1)!;
+    expect(followBody).toContain('Reasoned question');
+    expect(followBody).toContain('继续');
+    expect(JSON.parse(followBody).reasoning).toMatchObject({ effort: 'high' });
+  } finally {
+    for (const host of hosts) await host.runtime.dispose().catch(() => undefined);
+  }
+});
 
 async function waitForTurn(archive: SessionArchive, sessionId: string, runId: string) {
   for (let attempt = 0; attempt < 100; attempt++) {

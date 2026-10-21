@@ -10,6 +10,7 @@
 - Webview 水合后仍用现有 `restoreReviewMessages` 合并审查卡片；评审状态仍以 `ReviewArchive` 为唯一真源。
 - 半截回答只展示、不进入模型上下文；「继续」发送普通用户 turn（`继续` / `继续审查剩下的文件`），不自动重跑工具。
 - 用户轮次在推理开始前写入 `steps=0` 检查点；即使中断发生在第一个 step 完成前，该请求也会进入模型上下文，继续时不会变成无上下文的新问题。
+- 会话 metadata 同时保存模型能力（`supportedReasoningEfforts` / `defaultReasoningEffort`），重启后继续对话不会因丢失能力列表而拒绝 reasoning effort；更早的归档没有能力数据时，provider 接受显式传入的 effort（有目录数据的会话仍严格校验）。
 - 归档写失败只记日志，不阻断推理；损坏的 `history.json` 使会话只读，损坏的 turn 记录被跳过并标记 transcript 截断。
 
 ### 实现与测试入口

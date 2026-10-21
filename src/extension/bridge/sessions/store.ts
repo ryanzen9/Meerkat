@@ -61,6 +61,12 @@ export class SessionStore {
           title: '',
           createdAt,
           updatedAt: createdAt,
+          ...(provider.supportedReasoningEfforts
+            ? { supportedReasoningEfforts: provider.supportedReasoningEfforts }
+            : {}),
+          ...(provider.defaultReasoningEffort
+            ? { defaultReasoningEffort: provider.defaultReasoningEffort }
+            : {}),
         })
         .catch((error: unknown) => this.archive?.report(`Unable to persist session ${id}`, error));
     return session;
@@ -127,7 +133,16 @@ export class SessionStore {
       id,
       providerId: meta.providerId,
       createdAt: meta.createdAt,
-      provider: { model: meta.model, accountId: meta.accountId },
+      provider: {
+        model: meta.model,
+        accountId: meta.accountId,
+        ...(meta.supportedReasoningEfforts
+          ? { supportedReasoningEfforts: meta.supportedReasoningEfforts }
+          : {}),
+        ...(meta.defaultReasoningEffort
+          ? { defaultReasoningEffort: meta.defaultReasoningEffort }
+          : {}),
+      },
       history,
       reviews,
       ...(readOnly ? { readOnly: true } : {}),

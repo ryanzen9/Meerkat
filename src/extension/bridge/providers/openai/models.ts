@@ -49,7 +49,11 @@ function normalizeEfforts(value: unknown): SupportedReasoningEffort[] {
     if (!isReasoningEffort(effort)) continue;
     result.set(effort, {
       reasoningEffort: effort,
-      description: typeof option.description === 'string' ? option.description : effort,
+      // Also written to durable session metadata; keep it bounded.
+      description: (typeof option.description === 'string' ? option.description : effort).slice(
+        0,
+        500,
+      ),
     });
   }
   return [...result.values()];
