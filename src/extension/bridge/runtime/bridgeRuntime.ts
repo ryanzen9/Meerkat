@@ -84,6 +84,14 @@ export class BridgeRuntime {
       mode,
       ...(reviewRun ? { reviewRunId: runId } : {}),
     });
+    // The user turn is durable before inference starts. A crash or cancellation
+    // before the first completed step then still leaves the request in context,
+    // so a later "继续" is not a context-free new question.
+    const initialMessages: ModelMessage[] = [
+      ...session.history.getMessages(),
+      { role: 'user', content: text },
+    ];
+    this.persistCheckpoint(sessionId, runId, initialMessages, 0);
     const controller = new AbortController();
     const combined = AbortSignal.any([signal, controller.signal]);
     const idle = createIdleTimer(
@@ -118,7 +126,7 @@ export class BridgeRuntime {
     }
     this.runs.set(run.id, run);
     const provider = this.registry.get(session.providerId);
-    let lastCheckpoint: ModelMessage[] | undefined;
+    let lastCheckpoint: ModelMessage[] | undefined = initialMessages;
     const agentOptions: ReviewAgentOptions = {
       ...this.options,
       reviewRun,

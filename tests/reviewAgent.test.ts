@@ -255,7 +255,14 @@ for (const cooperates of [true, false]) {
       expect(output).toContain('tool-output-available');
       expect(toolAborted).toBe(true);
       expect(runtime.status(run.runId).status).toBe('cancelled');
-      expect(session.history.getMessages()).toEqual([]);
+      for (let attempt = 0; attempt < 100; attempt++) {
+        if (session.history.getMessages().length > 0) break;
+        await Bun.sleep(5);
+      }
+      // No step completed, but the interrupted request itself stays in context.
+      expect(session.history.getMessages()).toEqual([
+        { role: 'user', content: 'Inspect in parallel' },
+      ]);
     } finally {
       release?.();
       await runtime.dispose();

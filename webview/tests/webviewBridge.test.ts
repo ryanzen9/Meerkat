@@ -2692,3 +2692,14 @@ test('a recovery notice explains the interrupted turn and offers a manual contin
   );
   expect(running.queryByRole('button', { name: '继续' })).toBeNull();
 });
+
+test('the chat tab reserves vertical space for the recovery notice', async () => {
+  const view = mount();
+  await connected(view);
+  const section = view.container.querySelector('#panel-chat')!;
+  expect(section.getAttribute('class')).toContain('flex-col');
+  const chatArea = section.lastElementChild;
+  expect(chatArea?.getAttribute('class')).toContain('min-h-0');
+  expect(chatArea?.getAttribute('class')).toContain('flex-1');
+  expect(chatArea?.getAttribute('class')).toContain('overflow-hidden');
+});

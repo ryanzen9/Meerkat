@@ -203,10 +203,16 @@ test('cancelling keeps the visible partial answer and transcript trace', async (
     }
     const turn = await waitForTurn(host.archive, session.id, run.runId);
     expect(turn).toMatchObject({ status: 'cancelled' });
-    // No completed step means no model history checkpoint, but the partial
-    // answer is still displayed from the turn journal.
-    expect((await host.archive.readHistory(session.id)) ?? undefined).toBeUndefined();
-    expect(host.runtime.sessions.get(session.id).history.getMessages()).toEqual([]);
+    // No step completed, but the interrupted user turn is still durable so a
+    // continuation keeps the request in model context. Partial assistant
+    // output remains display-only.
+    expect(await host.archive.readHistory(session.id)).toMatchObject({
+      checkpoint: { steps: 0 },
+      messages: [{ role: 'user', content: 'Explain' }],
+    });
+    expect(host.runtime.sessions.get(session.id).history.getMessages()).toEqual([
+      { role: 'user', content: 'Explain' },
+    ]);
     const transcript = await host.runtime.transcript(session.id);
     expect(transcript.turns[0]).toMatchObject({ status: 'cancelled', text: 'Explain' });
     const parts = transcript.messages[1]!.parts as { type: string; text?: string }[];
@@ -247,6 +253,17 @@ test('a host replacement marks a live turn interrupted and preserves its partial
     expect(transcript.turns[0]).toMatchObject({ status: 'interrupted' });
     const parts = transcript.messages[1]!.parts as { type: string; text?: string }[];
     expect(parts.find((part) => part.type === 'text')).toMatchObject({ text: 'before restart' });
+
+    // A continuation sees the original request (and any model step that had
+    // already completed before the Host stopped).
+    const restored = await restarted.runtime.ensureSession(session.id);
+    const restoredMessages = restored.history.getMessages();
+    expect(restoredMessages[0]).toEqual({ role: 'user', content: 'Interrupted' });
+    expect(JSON.stringify(restoredMessages)).toContain('before restart');
+    const follow = restarted.runtime.start(session.id, '继续', new AbortController().signal);
+    expect(await consume(follow)).toContain('unused');
+    expect(restarted.requests.at(-1)).toContain('Interrupted');
+    expect(restarted.requests.at(-1)).toContain('继续');
   } finally {
     host.runtime.cancel(runId);
     for (const item of hosts) await item.runtime.dispose().catch(() => undefined);

@@ -559,6 +559,9 @@ export class TurnJournal {
   private closed = false;
   private buffer: string[] = [];
   private bufferedBytes = 0;
+  // Bytes already appended to the on-disk journal. Buffered bytes reset after
+  // every flush, so the per-turn limit must also include persisted bytes.
+  private persistedBytes = 0;
   private queue: Promise<void>;
 
   constructor(
@@ -591,12 +594,13 @@ export class TurnJournal {
     } catch {
       return;
     }
-    if (this.bufferedBytes + line.length + 1 > this.maxBytes) {
+    const lineBytes = Buffer.byteLength(`${line}\n`);
+    if (this.persistedBytes + this.bufferedBytes + lineBytes > this.maxBytes) {
       this.truncated = true;
       return;
     }
     this.buffer.push(`${line}\n`);
-    this.bufferedBytes += line.length + 1;
+    this.bufferedBytes += lineBytes;
     if (this.bufferedBytes >= FLUSH_THRESHOLD_BYTES) void this.flush();
   }
 
@@ -646,10 +650,12 @@ export class TurnJournal {
   private async writeBuffer(): Promise<void> {
     if (!this.buffer.length || this.failed) return;
     const data = this.buffer.join('');
+    const bytes = Buffer.byteLength(data);
     this.buffer = [];
     this.bufferedBytes = 0;
     try {
       await this.archive.appendTurnChunks(this.sessionId, this.runId, data);
+      this.persistedBytes += bytes;
     } catch (error) {
       this.failed = true;
       this.archive.report('Unable to append turn transcript', error);

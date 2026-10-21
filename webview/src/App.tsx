@@ -109,7 +109,7 @@ export function App() {
               role="tabpanel"
               aria-labelledby="tab-chat"
               hidden={chat.activeTab !== 'chat'}
-              className="min-h-0 flex-1 overflow-hidden"
+              className="flex min-h-0 flex-1 flex-col overflow-hidden"
               tabIndex={0}
             >
               <SessionRecoveryNotice
@@ -118,27 +118,29 @@ export function App() {
                 disabled={chat.isRunning}
                 onContinue={chat.continueLastTurn}
               />
-              <AgentChat
-                snapshot={panel.snapshot}
-                repository={repository}
-                sessionId={chat.session.id}
-                draft={chat.session.draft}
-                onDraftChange={chat.setDraft}
-                onNew={chat.newSession}
-                models={connection.models}
-                modelsReady={connection.modelsReady}
-                modelsLoading={connection.modelsLoading}
-                reasoningEffort={chat.reasoningEffort}
-                onReasoningEffortChange={chat.setReasoningEffort}
-                model={chat.model}
-                modelDisabled={
-                  !connection.authenticated || !connection.modelsReady || chat.isRunning
-                }
-                onModelChange={(model) => {
-                  connection.setModel(model);
-                  chat.newSession();
-                }}
-              />
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <AgentChat
+                  snapshot={panel.snapshot}
+                  repository={repository}
+                  sessionId={chat.session.id}
+                  draft={chat.session.draft}
+                  onDraftChange={chat.setDraft}
+                  onNew={chat.newSession}
+                  models={connection.models}
+                  modelsReady={connection.modelsReady}
+                  modelsLoading={connection.modelsLoading}
+                  reasoningEffort={chat.reasoningEffort}
+                  onReasoningEffortChange={chat.setReasoningEffort}
+                  model={chat.model}
+                  modelDisabled={
+                    !connection.authenticated || !connection.modelsReady || chat.isRunning
+                  }
+                  onModelChange={(model) => {
+                    connection.setModel(model);
+                    chat.newSession();
+                  }}
+                />
+              </div>
             </section>
             <section
               id="panel-files"

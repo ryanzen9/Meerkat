@@ -226,6 +226,24 @@ test('deleting a session removes its archive even with a live turn journal', asy
   expect(await archive.readMeta(sessionId)).toBeUndefined();
 });
 
+test('the per-turn journal limit is cumulative across buffer flushes', async () => {
+  const { archive } = await createArchive({ transcriptBytesPerTurn: 100_000 });
+  const sessionId = crypto.randomUUID();
+  const runId = crypto.randomUUID();
+  await archive.writeMeta(meta(sessionId));
+  const journal = archive.journal({ sessionId, runId, text: 'long turn', mode: 'chat' });
+  const delta = 'x'.repeat(40_000);
+  for (let index = 0; index < 3; index++)
+    journal.append({ type: 'text-delta', id: 'text-1', delta });
+  await journal.finish('completed');
+  // The first flush persists ~80 KiB. The third chunk must still count the
+  // persisted bytes, not just the refilled in-memory buffer.
+  expect(await archive.readTurnChunks(sessionId, runId)).toHaveLength(2);
+  const [turn] = await archive.listTurns(sessionId);
+  expect(turn?.transcriptTruncated).toBe(true);
+  expect(await archive.turnChunkBytes(sessionId, runId)).toBeLessThanOrEqual(100_000);
+});
+
 test('turn chunk files tolerate a partial tail line from a crash', async () => {
   const { directory, archive } = await createArchive();
   const sessionId = crypto.randomUUID();
