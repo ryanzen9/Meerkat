@@ -34,7 +34,7 @@ export function SessionRecoveryNotice({
         <div className="flex flex-wrap items-center gap-2">
           <p className="min-w-0 flex-1">
             {LABELS[recovery.status]}
-            {steps > 0 ? `（已完成 ${steps} 个步骤）` : ''}，可见记录已保留。
+            {steps > 0 ? `（已完成 ${steps} 个步骤）` : ''}
           </p>
           {recovery.status !== 'running' && (
             <button
