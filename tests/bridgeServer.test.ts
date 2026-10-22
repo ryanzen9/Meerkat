@@ -260,7 +260,15 @@ test('a model request with no response is cancelled by inactivity and aborts its
     expect(text).toContain('run_idle_timeout');
     expect(aborted).toBe(true);
     expect(f.runtime.status(response.headers.get('x-bridge-run-id')!).status).toBe('cancelled');
-    expect(f.runtime.sessions.get(id).history.getMessages()).toEqual([]);
+    // The user turn is durable before inference starts, so even a run that
+    // receives no model response keeps its request for a later continuation.
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (f.runtime.sessions.get(id).history.getMessages().length > 0) break;
+      await Bun.sleep(5);
+    }
+    expect(f.runtime.sessions.get(id).history.getMessages()).toEqual([
+      { role: 'user', content: 'Wait for response' },
+    ]);
   } finally {
     await f.runtime.dispose();
   }

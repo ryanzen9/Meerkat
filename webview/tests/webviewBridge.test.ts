@@ -22,6 +22,7 @@ import { createSession, appendTurn, restoreReviewState } from '../src/state/revi
 import type { AgentModel, ReasoningEffort } from '../../src/shared/agentModels';
 import type { InteractionMode } from '../../src/shared/review';
 import type { ThreadMessageLike } from '@assistant-ui/react';
+import { SessionRecoveryNotice } from '../src/components/SessionRecoveryNotice';
 
 type TestModelChunk =
   Awaited<ReturnType<MockLanguageModelV4['doStream']>>['stream'] extends ReadableStream<infer T>
@@ -2640,4 +2641,65 @@ test('failed pushes retain outgoing counts and drafts while duplicate pushes and
   });
   await waitFor(() => expect(view.getByRole('alert').textContent).toBe('提交已变化'));
   expect(files.getByRole('button', { name: '推送 (2 个提交)' })).toBeDefined();
+});
+
+test('a recovery notice explains the interrupted turn and offers a manual continuation', () => {
+  const onContinue = {
+    calls: 0,
+    run: () => {
+      onContinue.calls++;
+    },
+  };
+  const interrupted = {
+    status: 'interrupted' as const,
+    mode: 'chat' as const,
+    turn: {
+      runId: 'run-1',
+      text: 'Explain',
+      mode: 'chat' as const,
+      status: 'interrupted' as const,
+      checkpoints: 3,
+      startedAt: '2026-10-20T00:00:00.000Z',
+      endedAt: '2026-10-20T00:00:01.000Z',
+      error: { code: 'host_restart', message: '上一轮回答被中断。' },
+    },
+  };
+  const view = render(
+    createElement(SessionRecoveryNotice, {
+      recovery: interrupted,
+      truncated: true,
+      disabled: false,
+      onContinue: onContinue.run,
+    }),
+  );
+  expect(
+    view.container.querySelector('[data-session-recovery]')?.getAttribute('data-session-recovery'),
+  ).toBe('interrupted');
+  expect(view.container.querySelector('[data-session-recovery] p')?.textContent).toContain(
+    '已完成 3 个步骤',
+  );
+  expect(view.getByText('更早的会话记录已归档，未全部显示。')).toBeDefined();
+  fireEvent.click(view.getByRole('button', { name: '继续' }));
+  expect(onContinue.calls).toBe(1);
+  cleanup();
+  const running = render(
+    createElement(SessionRecoveryNotice, {
+      recovery: { ...interrupted, status: 'running' as const },
+      truncated: false,
+      disabled: true,
+      onContinue: onContinue.run,
+    }),
+  );
+  expect(running.queryByRole('button', { name: '继续' })).toBeNull();
+});
+
+test('the chat tab reserves vertical space for the recovery notice', async () => {
+  const view = mount();
+  await connected(view);
+  const section = view.container.querySelector('#panel-chat')!;
+  expect(section.getAttribute('class')).toContain('flex-col');
+  const chatArea = section.lastElementChild;
+  expect(chatArea?.getAttribute('class')).toContain('min-h-0');
+  expect(chatArea?.getAttribute('class')).toContain('flex-1');
+  expect(chatArea?.getAttribute('class')).toContain('overflow-hidden');
 });

@@ -308,7 +308,11 @@ for (const outcome of ['cancelled', 'failed'] as const) {
         issueCount: 1,
       });
       expect(f.session.reviews.snapshot().findings).toHaveLength(1);
-      expect(f.session.history.getMessages()).toEqual([]);
+      // Completed steps are checkpointed even when the run ends early, so a
+      // continuation keeps the user turn, tool calls and saved findings.
+      const history = f.session.history.getMessages();
+      expect(history.length).toBeGreaterThan(1);
+      expect(history[0]).toMatchObject({ role: 'user', content: 'Review all changes' });
       const savedFinding = f.session.reviews.snapshot().findings[0]!;
       expect(
         (await f.runtime.readFileReference(f.session.id, savedFinding.references[0]!.referenceId))

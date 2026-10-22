@@ -6,6 +6,7 @@ import { ReviewContext } from './components/ReviewContext';
 import { ReviewActions } from './components/ReviewActions';
 import { ReviewTabs } from './components/ReviewTabs';
 import { SessionHistory } from './components/SessionHistory';
+import { SessionRecoveryNotice } from './components/SessionRecoveryNotice';
 import { usePanel } from './hooks/usePanel';
 import { useReviewChat } from './hooks/useReviewChat';
 import { useAgentConnection } from './hooks/useAgentConnection';
@@ -108,30 +109,38 @@ export function App() {
               role="tabpanel"
               aria-labelledby="tab-chat"
               hidden={chat.activeTab !== 'chat'}
-              className="min-h-0 flex-1 overflow-hidden"
+              className="flex min-h-0 flex-1 flex-col overflow-hidden"
               tabIndex={0}
             >
-              <AgentChat
-                snapshot={panel.snapshot}
-                repository={repository}
-                sessionId={chat.session.id}
-                draft={chat.session.draft}
-                onDraftChange={chat.setDraft}
-                onNew={chat.newSession}
-                models={connection.models}
-                modelsReady={connection.modelsReady}
-                modelsLoading={connection.modelsLoading}
-                reasoningEffort={chat.reasoningEffort}
-                onReasoningEffortChange={chat.setReasoningEffort}
-                model={chat.model}
-                modelDisabled={
-                  !connection.authenticated || !connection.modelsReady || chat.isRunning
-                }
-                onModelChange={(model) => {
-                  connection.setModel(model);
-                  chat.newSession();
-                }}
+              <SessionRecoveryNotice
+                recovery={chat.recovery}
+                truncated={chat.transcriptTruncated}
+                disabled={chat.isRunning}
+                onContinue={chat.continueLastTurn}
               />
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <AgentChat
+                  snapshot={panel.snapshot}
+                  repository={repository}
+                  sessionId={chat.session.id}
+                  draft={chat.session.draft}
+                  onDraftChange={chat.setDraft}
+                  onNew={chat.newSession}
+                  models={connection.models}
+                  modelsReady={connection.modelsReady}
+                  modelsLoading={connection.modelsLoading}
+                  reasoningEffort={chat.reasoningEffort}
+                  onReasoningEffortChange={chat.setReasoningEffort}
+                  model={chat.model}
+                  modelDisabled={
+                    !connection.authenticated || !connection.modelsReady || chat.isRunning
+                  }
+                  onModelChange={(model) => {
+                    connection.setModel(model);
+                    chat.newSession();
+                  }}
+                />
+              </div>
             </section>
             <section
               id="panel-files"

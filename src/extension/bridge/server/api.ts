@@ -134,7 +134,7 @@ export function createBridgeApi(options: BridgeApiOptions) {
         }
       }
       if (path === '/v1/sessions') {
-        if (method === 'GET') return Response.json(runtime.sessions.list().map(sessionInfo));
+        if (method === 'GET') return Response.json(await runtime.listSessions());
         if (method === 'POST') {
           const { providerId, model } = await body(request, createSchema);
           const session = await runtime.registry
@@ -155,6 +155,9 @@ export function createBridgeApi(options: BridgeApiOptions) {
         options.onFindingChanged?.({ sessionId, finding });
         return Response.json(finding);
       }
+      const transcriptMatch = path.match(/^\/v1\/sessions\/([\w-]+)\/transcript$/);
+      if (transcriptMatch && method === 'GET')
+        return Response.json(await runtime.transcript(transcriptMatch[1]!));
       const sessionMatch = path.match(
         /^\/v1\/sessions\/([\w-]+)(\/messages|\/reviews|\/release)?$/,
       );
@@ -170,13 +173,14 @@ export function createBridgeApi(options: BridgeApiOptions) {
           return Response.json(reviews.snapshot());
         }
         if (!sessionMatch[2] && method === 'GET')
-          return Response.json(sessionInfo(runtime.sessions.get(id)));
+          return Response.json(sessionInfo(await runtime.ensureSession(id)));
         if (!sessionMatch[2] && method === 'DELETE') {
           await runtime.deleteSession(id);
           return new Response(null, { status: 204 });
         }
         if (sessionMatch[2] === '/messages' && method === 'POST') {
           const { text, reasoningEffort, mode } = await body(request, textSchema);
+          await runtime.ensureSession(id);
           const resolvedMode = await modeForTurn(id, text, reasoningEffort, mode, request.signal);
           const run = runtime.start(id, text, request.signal, reasoningEffort, resolvedMode);
           return createUIMessageStreamResponse({
@@ -206,6 +210,7 @@ export function createBridgeApi(options: BridgeApiOptions) {
         const text = turn.data.text;
         // Existing history and tool calls belong to the provider session. Do not
         // resend the client transcript or execute client-supplied tools/instructions.
+        await runtime.ensureSession(data.sessionId);
         const resolvedMode = await modeForTurn(
           data.sessionId,
           text,

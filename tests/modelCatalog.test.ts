@@ -37,6 +37,20 @@ test('ChatGPT OAuth catalog preserves visibility and order and normalizes reason
   ]);
 });
 
+test('capability descriptions stay bounded for durable session metadata', () => {
+  const [model] = parseModelCatalog({
+    models: [
+      {
+        slug: 'long-description',
+        display_name: 'Long',
+        visibility: 'list',
+        supported_reasoning_levels: [{ effort: 'high', description: 'x'.repeat(2000) }],
+      },
+    ],
+  });
+  expect(model!.supportedReasoningEfforts[0]!.description).toHaveLength(500);
+});
+
 test('public data/id catalogs and camel-case capabilities normalize without inventing effort options', () => {
   expect(
     parseModelCatalog({
@@ -103,4 +117,28 @@ test('selected reasoning effort reaches the real AI SDK agent request without re
     code: 'reasoning_effort_unavailable',
   });
   expect(bodies).toHaveLength(2);
+});
+
+test('a resumed session with unknown capability metadata accepts an explicit effort', async () => {
+  const provider = new OpenAIChatGPTProvider(signedInAuth(), async () =>
+    Response.json({ models: [] }),
+  );
+  const signal = new AbortController().signal;
+  // Archives written before capabilities were persisted have no effort list.
+  const legacy = await provider.resolveModel(
+    { model: 'fixture-model', accountId: 'account-1' },
+    signal,
+    'high',
+  );
+  expect(legacy.providerOptions).toMatchObject({
+    openai: { reasoningEffort: 'high', forceReasoning: true },
+  });
+  // Known-but-empty capabilities still reject an unsupported effort.
+  await expect(
+    provider.resolveModel(
+      { model: 'plain-model', accountId: 'account-1', supportedReasoningEfforts: [] },
+      signal,
+      'high',
+    ),
+  ).rejects.toMatchObject({ code: 'reasoning_effort_unavailable', status: 422 });
 });

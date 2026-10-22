@@ -7,6 +7,13 @@ import type { ChatMessage, ReviewTab } from '@shared/models';
 import { vscodeBridge } from '../services/vscode';
 import { isExtensionMessage } from '@shared/protocol';
 import { restoreReviewState, sessionMarkdown, startNewReviewSession } from '../state/reviewState';
+import {
+  continuationPrompt,
+  parseSessionTranscript,
+  restoreTranscriptMessages,
+  sessionRecovery,
+  type SessionRecovery,
+} from '../state/sessionTranscript';
 import { bridgeFetch } from '../services/bridgeFetch';
 import { bridgeJson, BridgeResponseError } from '../services/bridgeApi';
 import type { AgentModel, ReasoningEffort } from '@shared/agentModels';
@@ -77,6 +84,8 @@ export function useReviewChat(connection: {
     ),
   );
   const [cleanupError, setCleanupError] = useState('');
+  const [recovery, setRecovery] = useState<SessionRecovery | undefined>();
+  const [transcriptTruncated, setTranscriptTruncated] = useState(false);
   const model = session.model ?? connection.model;
   const modelAvailable = connection.models.some((item) => item.id === model);
   const selectedModel = connection.models.find((item) => item.id === model);
@@ -354,6 +363,61 @@ export function useReviewChat(connection: {
       clearTimeout(timer);
     };
   }, [session.id, session.bridgeSessionId, chat.status, setMessages, reviewRefresh]);
+  // Durable conversations are rehydrated from the Host transcript so a
+  // Webview reload shows the same tool cards and partial answer the user saw.
+  useEffect(() => {
+    const bridgeSessionId = session.bridgeSessionId;
+    if (!bridgeSessionId) {
+      setRecovery(undefined);
+      setTranscriptTruncated(false);
+      return;
+    }
+    if (chat.status === 'submitted' || chat.status === 'streaming') return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const load = async () => {
+      attempts++;
+      try {
+        const value = await bridgeJson<unknown>(
+          `/v1/sessions/${bridgeSessionId}/transcript`,
+          'GET',
+          undefined,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        const transcript = parseSessionTranscript(value);
+        if (!transcript) return;
+        // A just-finished turn may still be closing its journal; poll briefly
+        // instead of persisting a transcript that would miss its final chunks.
+        if (transcript.turns.at(-1)?.status === 'running' && attempts < 4) {
+          timer = setTimeout(() => {
+            void load();
+          }, 250);
+          return;
+        }
+        const reviews = currentState.current.sessions.find(
+          (item) => item.id === session.id,
+        )?.reviews;
+        setMessages(restoreTranscriptMessages(transcript, reviews));
+        setRecovery(sessionRecovery(transcript));
+        setTranscriptTruncated(transcript.truncated);
+      } catch (failure) {
+        if (controller.signal.aborted) return;
+        // Older conversations and unarchived sessions keep their local summary.
+        if (failure instanceof BridgeResponseError && failure.status === 404) {
+          setRecovery(undefined);
+          setTranscriptTruncated(false);
+        }
+      }
+    };
+    void load();
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [session.id, session.bridgeSessionId, chat.status, setMessages, reviewRefresh]);
+
   // The Bridge accepts text turns; do not offer the SDK's default file uploads.
   const runtime = useAISDKRuntime(chat, {
     isSendDisabled: !connection.modelsReady,
@@ -503,6 +567,11 @@ export function useReviewChat(connection: {
     setState(startNewReviewSession);
   }, [chat.stop, chat.messages, session.id, saveMessages]);
 
+  const continueLastTurn = useCallback(() => {
+    if (!recovery) return;
+    void chat.sendMessage({ text: continuationPrompt(recovery) }).catch(() => undefined);
+  }, [chat.sendMessage, recovery]);
+
   return {
     ...state,
     session,
@@ -510,6 +579,9 @@ export function useReviewChat(connection: {
     model,
     modelAvailable,
     reasoningEffort,
+    recovery,
+    transcriptTruncated,
+    continueLastTurn,
     setFindingStatus,
     setFindingArchived,
     setReasoningEffort,
