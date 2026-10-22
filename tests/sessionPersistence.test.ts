@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createUIMessageStreamResponse, type UIMessageChunk } from 'ai';
+import { createUIMessageStreamResponse, type ModelMessage, type UIMessageChunk } from 'ai';
 import { OpenAIChatGPTProvider } from '../src/extension/bridge/providers/openai/provider';
 import { ProviderRegistry } from '../src/extension/bridge/providers/registry';
 import { BridgeRuntime } from '../src/extension/bridge/runtime/bridgeRuntime';
@@ -12,7 +12,8 @@ import {
   SessionArchive,
 } from '../src/extension/bridge/sessions/sessionArchive';
 import { SessionStore } from '../src/extension/bridge/sessions/store';
-import { sessionTranscriptSchema } from '../src/shared/sessionArchive';
+import { MAX_SESSION_HISTORY_BYTES, messageBytes } from '../src/extension/bridge/sessions/history';
+import { SESSION_ARCHIVE_VERSION, sessionTranscriptSchema } from '../src/shared/sessionArchive';
 import { responseEvents, signedInAuth, sse } from './bridgeFixture';
 
 const roots: string[] = [];
@@ -188,6 +189,77 @@ test('a restarted conversation accepts its reasoning effort for the next turn', 
     expect(JSON.parse(followBody).reasoning).toMatchObject({ effort: 'high' });
   } finally {
     for (const host of hosts) await host.runtime.dispose().catch(() => undefined);
+  }
+});
+
+test('an oversized archived history is compacted instead of blocking new turns', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'meerkat-session-oversized-'));
+  roots.push(directory);
+  const archiveDirectory = join(directory, SESSION_ARCHIVE_DIRECTORY);
+  const archive = new SessionArchive(archiveDirectory);
+  await archive.initialize();
+  const store = new SessionStore(undefined, archive);
+  const session = store.create('openai-agents', {
+    model: 'fixture-model',
+    accountId: 'account-1',
+  });
+  await archive.flush();
+  const hugeOutput = 'x'.repeat(MAX_SESSION_HISTORY_BYTES + 1024);
+  await archive.writeHistory({
+    version: SESSION_ARCHIVE_VERSION,
+    sessionId: session.id,
+    messages: [
+      { role: 'user', content: 'Earlier question' },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool-call',
+            toolCallId: 'call-1',
+            toolName: 'read_file',
+            input: { path: 'a.ts' },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'call-1',
+            toolName: 'read_file',
+            output: { type: 'text', value: hugeOutput },
+          },
+        ],
+      },
+      { role: 'assistant', content: 'Earlier answer' },
+      { role: 'user', content: 'Next question' },
+    ],
+    checkpoint: { runId: crypto.randomUUID(), steps: 1, at: new Date().toISOString() },
+  });
+
+  const host = await hostFixture(answerTwo, directory);
+  try {
+    const restored = await host.runtime.ensureSession(session.id);
+    expect(restored.readOnly).toBeUndefined();
+    const history = restored.history.getMessages();
+    expect(messageBytes(history)).toBeLessThanOrEqual(MAX_SESSION_HISTORY_BYTES);
+    expect(history.some((message) => message.role === 'tool')).toBe(false);
+    expect(JSON.stringify(history)).not.toContain('tool-call');
+    expect(JSON.stringify(history)).toContain('Earlier question');
+    expect(JSON.stringify(history)).toContain('Earlier answer');
+
+    const run = host.runtime.start(session.id, 'After overflow', new AbortController().signal);
+    expect(await consume(run)).toContain('Answer two');
+    expect(host.runtime.status(run.runId).status).toBe('completed');
+    await waitForTurn(host.archive, session.id, run.runId);
+    const saved = await host.archive.readHistory(session.id);
+    expect(saved).toBeDefined();
+    expect(messageBytes(saved!.messages as ModelMessage[])).toBeLessThanOrEqual(
+      MAX_SESSION_HISTORY_BYTES,
+    );
+  } finally {
+    await host.runtime.dispose();
   }
 });
 

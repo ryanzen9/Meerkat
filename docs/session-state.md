@@ -11,6 +11,7 @@
 - 半截回答只展示、不进入模型上下文；「继续」发送普通用户 turn（`继续` / `继续审查剩下的文件`），不自动重跑工具。
 - 用户轮次在推理开始前写入 `steps=0` 检查点；即使中断发生在第一个 step 完成前，该请求也会进入模型上下文，继续时不会变成无上下文的新问题。
 - 会话 metadata 同时保存模型能力（`supportedReasoningEfforts` / `defaultReasoningEffort`），重启后继续对话不会因丢失能力列表而拒绝 reasoning effort；更早的归档没有能力数据时，provider 接受显式传入的 effort（有目录数据的会话仍严格校验）。
+- 模型历史超过 2 MiB 时不再直接 `session_full`：丢弃工具调用/工具结果及其中的 reasoning/file 部件，保留用户轮次和可见 assistant 文本；工具原文仍在 UI transcript、审查意见和引用快照中。
 - 归档写失败只记日志，不阻断推理；损坏的 `history.json` 使会话只读，损坏的 turn 记录被跳过并标记 transcript 截断。
 
 ### 实现与测试入口
@@ -21,6 +22,7 @@
 | UI 流回放                          | `src/extension/bridge/sessions/transcript.ts`                                                              | 同上 + `tests/sessionPersistence.test.ts`                                        |
 | 检查点注入                         | `src/extension/bridge/runtime/reviewAgent.ts`（`onStepEnd`）                                               | `tests/sessionPersistence.test.ts`                                               |
 | turn 日志、终端状态、惰性恢复、API | `src/extension/bridge/runtime/bridgeRuntime.ts`、`server/api.ts`、`service.ts`                             | `tests/sessionPersistence.test.ts`                                               |
+| 历史预算与工具历史压缩             | `src/extension/bridge/sessions/history.ts`                                                                 | `tests/sessionHistory.test.ts` + `tests/sessionPersistence.test.ts`              |
 | Webview 水合/提示/继续             | `webview/src/hooks/useReviewChat.ts`、`state/sessionTranscript.ts`、`components/SessionRecoveryNotice.tsx` | `webview/tests/sessionTranscript.test.ts`、`webview/tests/webviewBridge.test.ts` |
 
 当前实现见 [Agent Bridge](agent-bridge.md)。该文档末尾「没有宣称实现断线恢复或持久化 Agent 历史」的边界会在本方案落地后更新。
@@ -173,7 +175,7 @@ const result = await agent.stream({
 
 成功终点仍执行现有的 `session.history.commit([...messages, ...responseMessages])`，并把同一份结果写盘；检查点只是把「成功终点」提前到「每个 step 边界」。
 
-**内存历史与检查点的一致性**：用户轮次在推理开始前写入 `steps=0` 检查点；终态时把最后一个检查点同步进 `SessionHistory`（成功用完整历史，取消/超时/失败用最后检查点）。因此即使本轮一个 step 都没完成，被中断的用户请求仍会保留在模型上下文中，用户点停止后继续对话也不会丢掉已完成工具步骤或原始问题。注意现有 2 MiB 历史上限（`history.ts:15`）：超限时先丢弃检查点写入，不改变本次推理结果；后续 P1 再做上下文裁剪。
+**内存历史与检查点的一致性**：用户轮次在推理开始前写入 `steps=0` 检查点；终态时把最后一个检查点同步进 `SessionHistory`（成功用完整历史，取消/超时/失败用最后检查点）。因此即使本轮一个 step 都没完成，被中断的用户请求仍会保留在模型上下文中，用户点停止后继续对话也不会丢掉已完成工具步骤或原始问题。2 MiB 预算由 `SessionHistory` 与持久化检查点共同执行：超限时先移除工具历史（保留用户与 assistant 文本），只有纯文本仍超限时才抛出 `session_full`。工具调用/结果不会成对孤儿化；完整工具输出仍在 transcript、`ReviewArchive` 和引用归档中。
 
 ### 启动恢复与惰性重水化
 
@@ -255,7 +257,7 @@ const result = await agent.stream({
 
 - 历史列表从 Host 归档恢复（本地状态丢失场景）。
 - 审查 journal 从 `workspaceState` Memento 迁到同一归档目录（读写兼容旧键，降低 Memento 体积风险）。
-- 上下文治理：历史接近 2 MiB 上限时的工具输出老化/裁剪，避免长会话「成功回答后 commit 抛错」。
+- 上下文治理：在工具历史压缩之上，继续评估 token 预算、旧工具结果摘要化和缓存友好的压缩时机（当前仅在超过 2 MiB 时一次性压缩工具历史）。
 - 归档大小统计与「清理归档」命令，便于排障。
 
 ### P2 —— 直播重连（可选）
@@ -274,7 +276,7 @@ const result = await agent.stream({
 6. 删除会话：归档目录清理；`release`：归档仍可读、可继续（需重新与账户绑定）。
 7. 模拟磁盘写失败 / 归档文件损坏：不影响本轮推理；重开时回退文字摘要并提示。
 8. 超过保留策略与单轮大小上限：最旧 transcript 被裁剪、明确提示；`meta/history` 保留。
-9. `bun run check`、`bun run test`、`bun run build` 全绿；现有 100 会话上限、2 MiB 历史上限语义不变。
+9. `bun run check`、`bun run test`、`bun run build` 全绿；现有 100 会话上限不变；2 MiB 历史超限时压缩工具历史而不是让成功回合失败（仅纯文本仍超限才报 `session_full`）。
 
 ## 待确认的取舍
 

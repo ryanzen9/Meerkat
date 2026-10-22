@@ -3,7 +3,7 @@ import type { ModelMessage, UIMessageChunk } from 'ai';
 import { BridgeError, publicError } from '../errors';
 import type { ProviderRegistry } from '../providers/registry';
 import { SessionStore, sessionInfo } from '../sessions/store';
-import { MAX_SESSION_HISTORY_BYTES } from '../sessions/history';
+import { MAX_SESSION_HISTORY_BYTES, compactModelMessages, messageBytes } from '../sessions/history';
 import type { SessionArchive } from '../sessions/sessionArchive';
 import { buildSessionTranscript } from '../sessions/transcript';
 import type { ReasoningEffort } from '../../../shared/agentModels';
@@ -74,6 +74,13 @@ export class BridgeRuntime {
     const reviewContext = this.reviewContexts.get(sessionId);
     if ([...this.runs.values()].some((r) => r.sessionId === sessionId && !r.settled))
       throw new BridgeError('session_busy', 'A run is already active in this session.', 409);
+    // A long tool-heavy turn can leave the in-memory history above the durable
+    // budget. Drop old tool exchanges now so both the next model request and
+    // its checkpoint stay writable; user turns and assistant text are kept.
+    if (session.history.compact())
+      this.archive?.report(
+        `Session ${sessionId} exceeded ${MAX_SESSION_HISTORY_BYTES} bytes; old tool history was removed`,
+      );
     const runId = randomUUID();
     const reviewRun =
       mode === 'review' ? session.reviews.start(runId, sessionId, text, reviewContext) : undefined;
@@ -490,8 +497,11 @@ export class BridgeRuntime {
   ): void {
     const archive = this.archive;
     if (!archive) return;
+    // Checkpoints obey the same budget as live history: tool payloads are
+    // archived in the transcript, not re-sent as model context forever.
+    const compacted = compactModelMessages(messages);
     try {
-      if (Buffer.byteLength(JSON.stringify(messages)) > MAX_SESSION_HISTORY_BYTES) return;
+      if (messageBytes(compacted) > MAX_SESSION_HISTORY_BYTES) return;
     } catch {
       return;
     }
@@ -499,7 +509,7 @@ export class BridgeRuntime {
       .writeHistory({
         version: SESSION_ARCHIVE_VERSION,
         sessionId,
-        messages,
+        messages: compacted,
         checkpoint: { runId, steps, at: new Date().toISOString() },
       })
       .catch((error: unknown) =>
