@@ -61,14 +61,28 @@ ci: add extension packaging workflow
 
 允许的 type 为 `build`、`chore`、`ci`、`docs`、`feat`、`fix`、`perf`、`refactor`、`revert`、`style`、`test`，标题最长 100 个字符。VS Code 等 Git GUI 也会执行这些 hooks，需要其环境的 PATH 能找到 Bun 和 Node.js。
 
-[CI workflow](.github/workflows/ci.yml) 在推送到 `main`、创建或更新目标为 `main` 的 PR 时自动运行，也支持在 GitHub Actions 页面手动触发。流程使用 Node.js 22 和根 `package.json` 中 `packageManager` 锁定的 Bun 版本，依次执行：
+[CI workflow](.github/workflows/ci.yml) 在推送到 `main`、创建或更新目标为 `main` 的 PR，以及推送 `v*` 标签时自动运行，也支持在 GitHub Actions 页面手动触发。流程使用 Node.js 22 和根 `package.json` 中 `packageManager` 锁定的 Bun 版本，依次执行：
 
 1. `bun install --frozen-lockfile`，确保依赖与锁文件一致。
-2. `bun run check`，完成 lint、格式、类型和 Host / Webview 测试。
-3. `bun run package`，通过现有 `vscode:prepublish` 构建两端并生成 VSIX。
-4. 上传 `artifacts/*.vsix` 为 `meerkat-vsix-<commit SHA>` artifact，保留 14 天，可在该次 Actions 运行页面下载。
+2. `bun run check`，完成 lint、格式和类型检查。
+3. `bun run test`，运行 Host / Webview 测试。
+4. `bun run package`，通过现有 `vscode:prepublish` 构建两端并生成 VSIX。
+5. 上传 `artifacts/*.vsix` 为 `meerkat-vsix-<commit SHA>` artifact，保留 14 天，可在该次 Actions 运行页面下载。
 
-CI 通过 `HUSKY=0` 跳过本地 hooks 安装，检查由 workflow 显式执行。产物用于下载安装，不会自动发布到 Marketplace。
+CI 通过 `HUSKY=0` 跳过本地 hooks 安装，检查由 workflow 显式执行。版本标签构建成功后，独立的发布 job 下载本次构建的 VSIX，创建同名 GitHub Release 并上传安装包；只有发布 job 获得 `contents: write` 权限。普通分支与 PR 构建只上传 artifact。
+
+### 发布 GitHub Release
+
+先将上述 workflow 提交并推送到 GitHub。发布时更新根目录 `package.json` 的 `version`，提交版本改动并推送，然后为该提交创建并推送对应的 `v<version>` 标签。例如当前版本为 `0.1.0`：
+
+```sh
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+```
+
+标签必须与根目录 `package.json` 的版本完全一致，否则 CI 在安装依赖前失败，不创建 Release。全部检查、测试和打包通过后，流程使用自动提供的 `GITHUB_TOKEN` 发布，无需额外配置 PAT。Release 说明由 GitHub 自动生成；带连字符的版本（如 `v0.2.0-beta.1`）标记为预发布，不设为 Latest。重新运行同一标签的 workflow 时复用已有 Release，并重新上传同名 VSIX。
+
+用户可以在仓库的 [Releases 页面](https://github.com/ryanzen9/Meerkat/releases) 展开对应版本的 **Assets**，直接下载 `meerkat-<version>.vsix`，然后在 VS Code 执行 **Extensions: Install from VSIX...** 安装。Release 附件不受 Actions artifact 的 14 天保留期限影响。此流程不会发布到 GitHub Packages 或 VS Code Marketplace。
 
 ## 目录与运行边界
 
