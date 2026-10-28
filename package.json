@@ -203,6 +203,7 @@
   "extensionKind": [
     "workspace"
   ],
+  "icon": "resources/logos/exports/meerkat-app-icon-512.png",
   "engines": {
     "bun": ">=1.3.13",
     "node": ">=22.12.0",
